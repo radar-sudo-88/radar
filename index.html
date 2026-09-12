@@ -582,6 +582,9 @@
     let radarCircle = null;
     let pollBackoffUntil = 0;
     let consecutive429s = 0;
+    let aircraftPollTimer = null;
+    const AIRCRAFT_POLL_MS = 1000;
+    const AIRCRAFT_STALE_GRACE_MS = 5000;
     const aircraftTrails = {};
     // hex -> Date.now() of the last time the sweep beam passed this aircraft's bearing (CRT-style
     // "blip brightens on sweep pass, fades until the next one" - see drawRadarScope). The locked
@@ -821,7 +824,6 @@
 
       requestAnimationFrame(drawRadarScope);
       fetchLiveFlights();
-      setInterval(fetchLiveFlights, 12000);
 
       // Test-squawk via URL, e.g. radar.html?testsquawk=7700 - handy from mobile where
       // there's no keyboard for the shortcut below.
@@ -1705,14 +1707,25 @@
       });
     }
 
-    async function fetchLiveFlights() {
-      if (isFetching) return;
+    function scheduleAircraftPoll(delay = AIRCRAFT_POLL_MS) {
+      clearTimeout(aircraftPollTimer);
+      aircraftPollTimer = setTimeout(fetchLiveFlights, Math.max(0, delay));
+    }
 
-      if (Date.now() < pollBackoffUntil) {
+    async function fetchLiveFlights() {
+      if (isFetching) {
+        scheduleAircraftPoll(AIRCRAFT_POLL_MS);
+        return;
+      }
+
+      const now = Date.now();
+      if (now < pollBackoffUntil) {
+        scheduleAircraftPoll(pollBackoffUntil - now);
         return;
       }
 
       isFetching = true;
+      let nextPollDelay = AIRCRAFT_POLL_MS;
 
       // airplanes.live's public /v2/point/ endpoint now requires a feeder-linked API key
       // (returns 403 for unauthenticated requests) - dropped as a fallback.
@@ -1722,85 +1735,104 @@
       let success = false;
       let sawRateLimit = false;
 
-      for (let url of endpoints) {
-        try {
-          const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
-          if (response.status === 429) {
-            sawRateLimit = true;
-            continue;
-          }
-          if (response.ok) {
-            const data = await response.json();
-            const aircrafts = data.ac || data.aircraft;
-            if (aircrafts) {
-              // Some feeds inject a synthetic "ground station" placeholder - hex all zeros,
-              // type "TWR" - representing the receiver's own site rather than an aircraft.
-              // Drop these before anything else, or they can end up "nearest" (distance ~0)
-              // and lock the scrollboard onto a fake target.
-              liveAircraft = aircrafts.filter(ac => !/^0+$/.test(ac.hex || '') && (ac.t || '').toUpperCase() !== 'TWR');
-
-              // Keep the injected test-squawk aircraft (see triggerTestSquawk) alive across
-              // polls until it expires, so a real fetch cycle doesn't wipe it out mid-test.
-              if (testAircraft) {
-                if (Date.now() < testAircraftExpiryAt) {
-                  liveAircraft = liveAircraft.concat([testAircraft]);
-                } else {
-                  testAircraft = null;
-                }
-              }
-
-              // Same for the UFO easter egg (see triggerUfoSighting).
-              if (ufoAircraft) {
-                if (Date.now() < ufoAircraftExpiryAt) {
-                  liveAircraft = liveAircraft.concat([ufoAircraft]);
-                } else {
-                  ufoAircraft = null;
-                }
-              }
-
-              liveAircraft.forEach(ac => {
-                if (!ac.hex || !ac.lat || !ac.lon) return;
-                if (!aircraftFirstSeenAt[ac.hex]) aircraftFirstSeenAt[ac.hex] = Date.now();
-                if (!aircraftTrails[ac.hex]) aircraftTrails[ac.hex] = [];
-                const t = aircraftTrails[ac.hex];
-                const last = t[t.length - 1];
-                if (!last || Math.abs(last.lat - ac.lat) > 0.0005 || Math.abs(last.lon - ac.lon) > 0.0005) {
-                  t.push({ lat: ac.lat, lon: ac.lon });
-                  if (t.length > 20) t.shift();
-                }
-              });
-
-              // Refresh the cached screen points for the new aircraft list/trails now, once,
-              // rather than letting the render loop re-derive them on every frame - see
-              // recomputeAircraftPixelCache() above.
-              recomputeAircraftPixelCache();
-
-              // Route lookups only matter for whichever aircraft the scrollboard is locked
-              // onto (an in-range emergency squawk, or otherwise the nearest aircraft) -
-              // resolving the whole liveAircraft list every poll needlessly floods adsbdb/hexdb.
-              const scrollboardTarget = findScrollboardTarget(liveAircraft);
-              if (scrollboardTarget) await fetchRoutesForAircraft([scrollboardTarget]);
-
-              updateUIState(true);
-              success = true;
-              break;
+      try {
+        for (let url of endpoints) {
+          try {
+            const response = await fetch(url, {
+              headers: { 'Accept': 'application/json' },
+              cache: 'no-store'
+            });
+            if (response.status === 429) {
+              sawRateLimit = true;
+              continue;
             }
-          }
-        } catch (err) {}
-      }
+            if (response.ok) {
+              const data = await response.json();
+              const aircrafts = data.ac || data.aircraft;
+              if (aircrafts) {
+                // Some feeds inject a synthetic "ground station" placeholder - hex all zeros,
+                // type "TWR" - representing the receiver's own site rather than an aircraft.
+                // Drop these before anything else, or they can end up "nearest" (distance ~0)
+                // and lock the scrollboard onto a fake target.
+                liveAircraft = aircrafts.filter(ac => !/^0+$/.test(ac.hex || '') && (ac.t || '').toUpperCase() !== 'TWR');
 
-      if (success) {
-        consecutive429s = 0;
-        pollBackoffUntil = 0;
-      } else if (sawRateLimit) {
-        consecutive429s++;
-        // 15s, 30s, 60s, 120s, ... capped at 5 minutes
-        const backoffMs = Math.min(300000, 15000 * Math.pow(2, consecutive429s - 1));
-        pollBackoffUntil = Date.now() + backoffMs;
-      } else {
-        updateUIState(false);
+                // Keep the injected test-squawk aircraft (see triggerTestSquawk) alive across
+                // polls until it expires, so a real fetch cycle doesn't wipe it out mid-test.
+                if (testAircraft) {
+                  if (Date.now() < testAircraftExpiryAt) {
+                    liveAircraft = liveAircraft.concat([testAircraft]);
+                  } else {
+                    testAircraft = null;
+                  }
+                }
+
+                // Same for the UFO easter egg (see triggerUfoSighting).
+                if (ufoAircraft) {
+                  if (Date.now() < ufoAircraftExpiryAt) {
+                    liveAircraft = liveAircraft.concat([ufoAircraft]);
+                  } else {
+                    ufoAircraft = null;
+                  }
+                }
+
+                const receivedAt = Date.now();
+                liveAircraft.forEach(ac => {
+                  if (!ac.hex || !ac.lat || !ac.lon) return;
+                  ac.__receivedAt = receivedAt;
+                  if (!aircraftFirstSeenAt[ac.hex]) aircraftFirstSeenAt[ac.hex] = receivedAt;
+                  if (!aircraftTrails[ac.hex]) aircraftTrails[ac.hex] = [];
+                  const t = aircraftTrails[ac.hex];
+                  const last = t[t.length - 1];
+                  if (!last || Math.abs(last.lat - ac.lat) > 0.0005 || Math.abs(last.lon - ac.lon) > 0.0005) {
+                    t.push({ lat: ac.lat, lon: ac.lon });
+                    if (t.length > 20) t.shift();
+                  }
+                });
+
+                // Refresh the cached screen points for the new aircraft list/trails now, once,
+                // rather than letting the render loop re-derive them on every frame - see
+                // recomputeAircraftPixelCache() above.
+                recomputeAircraftPixelCache();
+
+                // Route lookups only matter for whichever aircraft the scrollboard is locked
+                // onto (an in-range emergency squawk, or otherwise the nearest aircraft) -
+                // resolving the whole liveAircraft list every poll needlessly floods adsbdb/hexdb.
+                // fetchRoutesForAircraft() has its own 5-minute cache, so this does NOT hit the
+                // route APIs once per aircraft refresh.
+                const scrollboardTarget = findScrollboardTarget(liveAircraft);
+                if (scrollboardTarget) await fetchRoutesForAircraft([scrollboardTarget]);
+
+                updateUIState(true);
+                success = true;
+                break;
+              }
+            }
+          } catch (err) {
+            // Network errors are handled below; keep the last good aircraft state visible.
+          }
+        }
+
+        if (success) {
+          consecutive429s = 0;
+          pollBackoffUntil = 0;
+          nextPollDelay = AIRCRAFT_POLL_MS;
+        } else if (sawRateLimit) {
+          consecutive429s++;
+          // 15s, 30s, 60s, 120s, ... capped at 5 minutes.
+          // This prevents a 1-second poll loop from hammering the provider after a 429.
+          const backoffMs = Math.min(300000, 15000 * Math.pow(2, consecutive429s - 1));
+          pollBackoffUntil = Date.now() + backoffMs;
+          nextPollDelay = backoffMs;
+        } else {
+          // A transient network/API error should not blank the map. Keep the last successful
+          // aircraft state visible and try again on the normal 1-second cadence.
+          updateUIState(false);
+          nextPollDelay = AIRCRAFT_POLL_MS;
+        }
+      } finally {
+        isFetching = false;
+        scheduleAircraftPoll(nextPollDelay);
       }
-      isFetching = false;
     }
 
     function updateUIState(isConnected) {
