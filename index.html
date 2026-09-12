@@ -775,6 +775,81 @@
     const WORKER_URL = 'https://cors-proxy-radar.wisp.uno';
     const ROUTESET_PATH = '/api/0/routeset';
     const userConfig = { lat: 52.9529, lon: -0.9547, radiusNM: 35 };
+
+    // --- Postcode-based station location ---------------------------------
+    // Supports linking to e.g. {site}/radar/AB12 3CD - looks for a URL path
+    // segment immediately after one literally named "radar" and, if present,
+    // treats it as a UK postcode to geocode and re-centre the station on.
+    // Falls back to the hardcoded userConfig above whenever there's no such
+    // segment, the segment isn't a plausible postcode shape, or the lookup
+    // fails for any reason (network error, unmatched postcode, etc.) - this
+    // never blocks the radar from starting with its normal default.
+    //
+    // Uses postcodes.io: free, no API key, and (unlike the ADS-B APIs above)
+    // it actually sends Access-Control-Allow-Origin, so no proxy is needed
+    // here.
+    function extractPostcodeFromPath() {
+      const segments = window.location.pathname.split('/').map(decodeURIComponent).filter(Boolean);
+      const radarIndex = segments.findIndex((seg) => seg.toLowerCase() === 'radar');
+      if (radarIndex === -1 || radarIndex === segments.length - 1) return null;
+      return segments[radarIndex + 1];
+    }
+
+    // UK postcodes: an outward code (2-4 chars) followed by an inward code
+    // that's always exactly 3 characters (a digit then 2 letters). Accepts
+    // input with or without a space between the two (a link typed/shared
+    // without the space is common) and re-inserts it in the right place.
+    function normalizePostcode(raw) {
+      const compact = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+      if (compact.length < 5 || compact.length > 7) return null;
+      return `${compact.slice(0, -3)} ${compact.slice(-3)}`;
+    }
+
+    function formatStationLabel(lat, lon) {
+      const latDir = lat >= 0 ? 'N' : 'S';
+      const lonDir = lon >= 0 ? 'E' : 'W';
+      return `Station: ${Math.abs(lat).toFixed(4)}° ${latDir}, ${Math.abs(lon).toFixed(4)}° ${lonDir}`;
+    }
+
+    async function resolveStationCoords() {
+      const rawSegment = extractPostcodeFromPath();
+      if (!rawSegment) return;
+
+      const postcode = normalizePostcode(rawSegment);
+      if (!postcode) {
+        console.warn('[STATION] URL segment after /radar/ is not a plausible UK postcode, keeping default:', rawSegment);
+        return;
+      }
+
+      try {
+        const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`, {
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) {
+          console.warn('[STATION] Postcode lookup failed, keeping default coordinates:', postcode, res.status);
+          return;
+        }
+        const data = await res.json();
+        const result = data && data.result;
+        if (!result || !Number.isFinite(result.latitude) || !Number.isFinite(result.longitude)) {
+          console.warn('[STATION] Postcode lookup returned no usable result, keeping default coordinates:', postcode);
+          return;
+        }
+        userConfig.lat = result.latitude;
+        userConfig.lon = result.longitude;
+        console.log(`[STATION] Centred on ${postcode} (${result.latitude}, ${result.longitude})`);
+      } catch (err) {
+        console.warn('[STATION] Postcode lookup errored, keeping default coordinates:', postcode, err);
+      }
+    }
+
+    // Kicked off immediately at script load - this is a plain network
+    // request, not something that needs to wait on the start-overlay tap
+    // gesture. startFeed() awaits this before initialising the map, so the
+    // very first render is already centred correctly instead of snapping
+    // over afterwards.
+    const stationReadyPromise = resolveStationCoords();
+
     let map = null;
     let canvas = null;
     let ctx = null;
@@ -997,9 +1072,15 @@
     // Runs on the first user gesture (tap/click on the start overlay). Browsers require a
     // real user gesture before AudioContext or SpeechSynthesis will produce sound, so nothing
     // in announceMilitaryAircraft() can reliably fire until this has run at least once.
-    function startFeed() {
+    async function startFeed() {
       if (feedStarted) return;
       feedStarted = true;
+
+      // Make sure any postcode-based station override (see resolveStationCoords
+      // above) has finished before the map/radar are built around userConfig.
+      await stationReadyPromise;
+      const statusBar = document.getElementById('status-bar');
+      if (statusBar) statusBar.textContent = formatStationLabel(userConfig.lat, userConfig.lon);
 
       initKioskAudio();
       if ('speechSynthesis' in window) {
