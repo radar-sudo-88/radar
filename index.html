@@ -613,154 +613,155 @@
     const photoCache = {}; // key -> url string, or null for known-empty
 
     // ---------------------------------------------------------------------
-    // Radar-scope silhouettes: plane-watch/pw-silhouettes (CC BY-NC-SA 4.0 -
-    // https://github.com/plane-watch/pw-silhouettes), vendored locally as a prebuilt
-    // spritesheet rather than fetched from a CDN at runtime - see pw-silhouettes/ next to
-    // this file (spritesheet.png + spritesheet.json + LICENSE). spritesheet.png is a grid
-    // of 72x72px cells, each shape filled white / stroked black; spritesheet.json maps
-    // every ICAO type designator (ac.t, e.g. "B738") and every ADS-B emitter category
-    // (ac.category, e.g. "A7") to a cell (or an animated sequence of cells), an anchor
-    // point, and a scale. A designator with no specific artwork falls back to its
-    // category's generic silhouette (see resolvePwSpriteKey); if even that's missing -
-    // e.g. no category reported at all - nothing is drawn for that aircraft beyond its
-    // label. There is no hand-drawn glyph fallback any more.
+    // Radar-scope aircraft silhouettes
     // ---------------------------------------------------------------------
-    const PW_SPRITESHEET_PNG_PATH = './pw-silhouettes/spritesheet.png';
-    const PW_SPRITESHEET_JSON_PATH = './pw-silhouettes/spritesheet.json';
+    // The previous version depended on a local pw-silhouettes spritesheet. If the
+    // JSON file was not physically deployed beside this HTML file, the web server
+    // returned the site's HTML page instead of JSON, producing:
+    //   Unexpected token '<', "<!DOCTYPE ..." is not valid JSON
+    //
+    // These silhouettes are now drawn directly on the radar canvas. This removes the
+    // external/local spritesheet dependency entirely and gives the scope the same
+    // compact top-down aircraft look as the reference image: bright filled aircraft,
+    // dark outline, nose pointing along track, with different shapes for airliners,
+    // light aircraft, helicopters and military aircraft.
+    // ---------------------------------------------------------------------
 
-    let pwSpritesheetImg = null;
-    let pwSpritesheetMeta = null;
-    let pwSpritesheetReady = false;
+    function drawVectorAircraftSilhouette(ctx, ac, pt, heading, colorHex) {
+      const category = String(ac.category || '').trim().toUpperCase();
+      const type = String(ac.t || '').trim().toUpperCase();
+      const typeLower = type.toLowerCase();
 
-    // Full recoloured copies of the sheet, keyed by target hex colour - see getRecoloredSheet().
-    const pwRecoloredSheetCache = {};
-
-    async function loadPwSpritesheet() {
-      try {
-        const [meta, img] = await Promise.all([
-          fetch(PW_SPRITESHEET_JSON_PATH).then(res => res.json()),
-          new Promise((resolve, reject) => {
-            const image = new Image();
-            image.onload = () => resolve(image);
-            image.onerror = () => reject(new Error('failed to decode spritesheet.png'));
-            image.src = PW_SPRITESHEET_PNG_PATH;
-          })
-        ]);
-        pwSpritesheetMeta = meta;
-        pwSpritesheetImg = img;
-        pwSpritesheetReady = true;
-        console.debug(`[pw-silhouettes] spritesheet loaded (${Object.keys(meta.sprites).length} sprites)`);
-      } catch (err) {
-        console.warn('[pw-silhouettes] failed to load local spritesheet -', err);
-      }
-    }
-
-    function hexToRgb(hex) {
-      const clean = hex.replace('#', '');
-      return {
-        r: parseInt(clean.substring(0, 2), 16),
-        g: parseInt(clean.substring(2, 4), 16),
-        b: parseInt(clean.substring(4, 6), 16)
-      };
-    }
-
-    // ADS-B emitter category letter -> this repo's internal numeric "typeCode" (see its
-    // generics/*.json + tools/build_spritesheet - the genericToSprite key is
-    // "${typeCode}/${categoryNumber}", e.g. category "A7" (rotorcraft) -> "4/7").
-    const PW_CATEGORY_LETTER_TO_TYPECODE = { A: 4, B: 3, C: 2, D: 1 };
-
-    // Resolves an aircraft to a sprite key: specific type designator first, then its
-    // ADS-B category's generic silhouette, or null if neither is covered.
-    function resolvePwSpriteKey(ac) {
-      if (!pwSpritesheetMeta) return null;
-      const designator = (ac.t || '').trim().toUpperCase();
-      if (designator && pwSpritesheetMeta.airframeToSprite[designator]) {
-        return pwSpritesheetMeta.airframeToSprite[designator];
-      }
-      const category = (ac.category || '').trim().toUpperCase();
-      const typeCode = PW_CATEGORY_LETTER_TO_TYPECODE[category[0]];
-      const number = category[1];
-      if (typeCode && number) {
-        const genericKey = `${typeCode}/${number}`;
-        if (pwSpritesheetMeta.genericToSprite[genericKey]) return pwSpritesheetMeta.genericToSprite[genericKey];
-      }
-      return null;
-    }
-
-    // Recolours a full copy of the spritesheet for one target colour, once, and caches it -
-    // every aircraft rendered in that colour then just blits a rect out of the cached canvas
-    // (no per-aircraft/per-frame recolouring work in the render loop). Sprites are white
-    // fill / black stroke on a transparent background (CONTRIBUTING.md in that repo), so
-    // this is a duotone remap: each pixel's grey level (0 = stroke, 1 = fill) picks how far
-    // to blend from the canvas-background stroke colour toward the target fill colour,
-    // leaving the original alpha untouched - reproducing the same look the old per-SVG
-    // fill/stroke string-substitution gave.
-    function getRecoloredSheet(colorHex) {
-      if (pwRecoloredSheetCache[colorHex]) return pwRecoloredSheetCache[colorHex];
-      if (!pwSpritesheetReady) return null;
-
-      const w = pwSpritesheetImg.naturalWidth;
-      const h = pwSpritesheetImg.naturalHeight;
-      const src = document.createElement('canvas');
-      src.width = w;
-      src.height = h;
-      const sctx = src.getContext('2d');
-      sctx.drawImage(pwSpritesheetImg, 0, 0);
-      const imageData = sctx.getImageData(0, 0, w, h);
-      const px = imageData.data;
-
-      const strokeRgb = hexToRgb('#020704');
-      const fillRgb = hexToRgb(colorHex);
-      for (let i = 0; i < px.length; i += 4) {
-        if (px[i + 3] === 0) continue;
-        const grey = px[i] / 255;
-        px[i] = strokeRgb.r + (fillRgb.r - strokeRgb.r) * grey;
-        px[i + 1] = strokeRgb.g + (fillRgb.g - strokeRgb.g) * grey;
-        px[i + 2] = strokeRgb.b + (fillRgb.b - strokeRgb.b) * grey;
-      }
-      sctx.putImageData(imageData, 0, 0);
-      pwRecoloredSheetCache[colorHex] = src;
-      return src;
-    }
-
-    // Draws an aircraft's silhouette at (pt.x, pt.y), rotated to its heading unless the
-    // sprite says not to. Returns whether anything was actually drawn.
-    function drawPwSilhouette(ctx, ac, pt, heading, colorHex) {
-      const spriteKey = resolvePwSpriteKey(ac);
-      if (!spriteKey) return false;
-      const spriteMeta = pwSpritesheetMeta.sprites[spriteKey];
-      if (!spriteMeta) return false;
-      const sheet = getRecoloredSheet(colorHex);
-      if (!sheet) return false;
-
-      const cellSize = pwSpritesheetMeta.metadata.spriteWidth;
-      const cols = Math.floor(sheet.width / cellSize);
-      const frameIdx = spriteMeta.frameTime
-        ? Math.floor(Date.now() / spriteMeta.frameTime) % spriteMeta.ids.length
-        : 0;
-      const id = spriteMeta.ids[frameIdx];
-      const sx = (id % cols) * cellSize;
-      const sy = Math.floor(id / cols) * cellSize;
-
-      // Scale to roughly the same on-scope footprint the old hand-drawn/CDN glyphs used,
-      // then let each sprite's own `scale` (bigger for e.g. an A380, smaller for a light
-      // single) adjust from there.
-      const cellPx = 22 * (spriteMeta.scale || 1);
-      const anchor = spriteMeta.anchor || { x: cellSize / 2, y: cellSize / 2 };
+      // A few broad type/category hints keep the shapes believable without requiring
+      // another network request or an aircraft-type database.
+      const isHelicopter =
+        category === 'A7' || /^(R22|R44|EC20|EC30|EC35|EC45|EC55|EC75|H125|H130|H135|H145|H155|H160|AS3|AS32|B06|B407|B412|S76|S92|AW13|AW16|AW17)/.test(type);
+      const isLight =
+        category === 'A1' || category === 'A2' ||
+        /^(C1[0-9]|C2[0-9]|C3[0-9]|C4[0-9]|C5[0-9]|C6[0-9]|C7[0-9]|C8[0-9]|C9[0-9]|P28|PA1|PA2|PA3|PA4|DA4|DA5|SR2|TB[0-9]|BE[0-9]|SF2|G[A-Z0-9])/.test(type);
+      const isMilitary =
+        category === 'A5' || category === 'A6' ||
+        /^(F[0-9]|E[0-9]|T[0-9]|A10|B1|B2|B52|C130|C17|C5M|KC|P8|RC|U2|SR71|MIR|RAF|EUFI|F35|F22|F18|GRIP)/.test(type);
 
       ctx.save();
       ctx.translate(pt.x, pt.y);
-      if (!spriteMeta.noRotate) ctx.rotate((heading * Math.PI) / 180);
-      ctx.drawImage(
-        sheet,
-        sx, sy, cellSize, cellSize,
-        -(anchor.x / cellSize) * cellPx,
-        -(anchor.y / cellSize) * cellPx,
-        cellPx,
-        cellPx
-      );
+      // Canvas 0 degrees points right, while aircraft track 0 degrees is north.
+      // -90 degrees aligns the vector nose with track 0 / north.
+      ctx.rotate((heading - 90) * Math.PI / 180);
+
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.fillStyle = colorHex;
+      ctx.strokeStyle = '#050505';
+      ctx.lineWidth = 1.05;
+      ctx.shadowBlur = 0;
+
+      ctx.beginPath();
+
+      if (isHelicopter) {
+        // Compact top-down helicopter: rotor bar + body + tail boom.
+        ctx.ellipse(0, 0, 5.4, 2.9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(-1, 1.7);
+        ctx.lineTo(-7.5, 1.7);
+        ctx.lineTo(-9, 2.2);
+        ctx.lineTo(-7.2, 0.9);
+        ctx.lineTo(-1, 0.9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(-5.5, -4.6);
+        ctx.lineTo(5.5, -4.6);
+        ctx.moveTo(-5.5, 4.6);
+        ctx.lineTo(5.5, 4.6);
+        ctx.stroke();
+      } else if (isLight) {
+        // Small GA aircraft, deliberately narrow and slightly chunky like the reference.
+        ctx.moveTo(0, -9);
+        ctx.lineTo(1.5, -3.5);
+        ctx.lineTo(6.8, 1.8);
+        ctx.lineTo(6.3, 3.0);
+        ctx.lineTo(1.2, 1.5);
+        ctx.lineTo(1.0, 6.5);
+        ctx.lineTo(3.0, 9.0);
+        ctx.lineTo(2.0, 9.7);
+        ctx.lineTo(0, 7.0);
+        ctx.lineTo(-2.0, 9.7);
+        ctx.lineTo(-3.0, 9.0);
+        ctx.lineTo(-1.0, 6.5);
+        ctx.lineTo(-1.2, 1.5);
+        ctx.lineTo(-6.3, 3.0);
+        ctx.lineTo(-6.8, 1.8);
+        ctx.lineTo(-1.5, -3.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else if (isMilitary) {
+        // Fast-jet / military silhouette with swept wings.
+        ctx.moveTo(0, -11);
+        ctx.lineTo(1.6, -4.2);
+        ctx.lineTo(7.2, 2.4);
+        ctx.lineTo(6.2, 3.3);
+        ctx.lineTo(1.6, 1.5);
+        ctx.lineTo(1.0, 5.0);
+        ctx.lineTo(3.5, 8.5);
+        ctx.lineTo(2.4, 9.2);
+        ctx.lineTo(0, 6.8);
+        ctx.lineTo(-2.4, 9.2);
+        ctx.lineTo(-3.5, 8.5);
+        ctx.lineTo(-1.0, 5.0);
+        ctx.lineTo(-1.6, 1.5);
+        ctx.lineTo(-6.2, 3.3);
+        ctx.lineTo(-7.2, 2.4);
+        ctx.lineTo(-1.6, -4.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        // Main airliner silhouette: wide swept wings, twin tail fins and a recognisable nose.
+        ctx.moveTo(0, -12);
+        ctx.bezierCurveTo(1.5, -10, 2.0, -6, 2.2, -2.5);
+        ctx.lineTo(11.0, 4.2);
+        ctx.lineTo(10.2, 5.5);
+        ctx.lineTo(2.1, 3.0);
+        ctx.lineTo(2.0, 8.0);
+        ctx.lineTo(5.2, 10.7);
+        ctx.lineTo(4.1, 11.8);
+        ctx.lineTo(0, 9.4);
+        ctx.lineTo(-4.1, 11.8);
+        ctx.lineTo(-5.2, 10.7);
+        ctx.lineTo(-2.0, 8.0);
+        ctx.lineTo(-2.1, 3.0);
+        ctx.lineTo(-10.2, 5.5);
+        ctx.lineTo(-11.0, 4.2);
+        ctx.lineTo(-2.2, -2.5);
+        ctx.bezierCurveTo(-2.0, -6, -1.5, -10, 0, -12);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Small fuselage highlight makes the shape readable at low radar zoom.
+        ctx.beginPath();
+        ctx.moveTo(0, -9);
+        ctx.lineTo(0, 7);
+        ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+        ctx.lineWidth = 0.65;
+        ctx.stroke();
+      }
+
       ctx.restore();
       return true;
+    }
+
+    // Compatibility wrapper: keep the existing render call unchanged while making
+    // the silhouette implementation completely self-contained.
+    function drawPwSilhouette(ctx, ac, pt, heading, colorHex) {
+      return drawVectorAircraftSilhouette(ctx, ac, pt, heading, colorHex);
     }
 
     let scrollState = 'PAUSED_TOP';
@@ -813,7 +814,6 @@
       ctx = canvas.getContext('2d');
 
       initMap();
-      loadPwSpritesheet();
       resizeCanvas();
       window.addEventListener('resize', resizeCanvas);
       buildAltitudeLegend();
