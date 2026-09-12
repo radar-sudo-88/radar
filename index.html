@@ -585,10 +585,6 @@
     let pollBackoffUntil = 0;
     let consecutive429s = 0;
     const aircraftTrails = {};
-    // hex -> Date.now() of the last time the sweep beam passed this aircraft's bearing (CRT-style
-    // "blip brightens on sweep pass, fades until the next one" - see drawRadarScope). The locked
-    // aircraft is exempt and always drawn at full brightness regardless of this.
-    const aircraftLastSweepHit = {};
     // hex -> Date.now() the first time this aircraft was seen this session - used for the
     // scrollboard's "Flight Time" (time tracked, not a real off-block/departure timestamp,
     // which ADS-B doesn't give us - see updateNearestScrollboard).
@@ -1305,18 +1301,15 @@
     }
 
     function resolveFlightRoute(flightStr, ac) {
-      if (ac.orig && ac.dest) {
-        return { fromCode: ac.orig.toUpperCase(), toCode: ac.dest.toUpperCase(), source: 'adsb-payload' };
-      }
-      if (ac.from && ac.to) {
-        return { fromCode: ac.from.toUpperCase(), toCode: ac.to.toUpperCase(), source: 'adsb-payload' };
-      }
-
       const callsign = (flightStr || '').toUpperCase().trim();
 
       // Real route data from adsbdb/hexdb, if we resolved it for this callsign.
       const cached = routeCache[callsign];
-      if (cached) return cached;
+      if (cached) {
+        console.log('[ROUTE] cache hit for', callsign, '-', cached);
+        return cached;
+      }
+      console.log('[ROUTE] no cache entry for', callsign, '(value:', cached, ') - falling back to heuristic guess');
 
       // Nothing confirmed from either source - fall through to a heuristic guess.
       // This is clearly NOT real routing data, just a plausible-looking placeholder based
@@ -2361,6 +2354,7 @@
         // from a confirmed route.
         const route = resolveFlightRoute(flightStr, lockedAircraft);
         const isEstimated = route.source === 'estimated';
+        console.log('[ROUTE] tag decision -', { callsign: flightStr, source: route.source, isEstimated, tagWillShow: isEstimated ? 'EST' : (route.source === 'hexdb' ? 'HEXDB' : 'CONFIRMED') });
 
         routeContainer.classList.toggle('route-estimated', isEstimated);
 
@@ -2397,11 +2391,6 @@
     // elapsed wall-clock time instead (see drawRadarScope) keeps the sweep's real-world speed
     // constant no matter how many frames the device manages to render.
     const SWEEP_RATE_RAD_PER_SEC = 0.9;
-    // One full sweep rotation (2π at the rate above, ~7s) - fade every non-locked blip out
-    // over roughly that long, down to a dim floor rather than to nothing, so the scope still
-    // reads at a glance between sweep passes.
-    const SWEEP_FADE_MS = 7000;
-    const SWEEP_FADE_MIN_ALPHA = 0.35;
 
     // Soft render-rate cap: redrawing the full canvas (rings, sweep, every aircraft
     // silhouette + label) at an uncapped 60fps is more work than a Raspberry Pi's GPU/canvas
@@ -2536,22 +2525,7 @@
           const isQra = ac.squawk === QRA_SQUAWK;
           const isLocked = lockedAircraft && lockedAircraft.hex === ac.hex;
 
-          // CRT-style sweep fade: everything except the locked aircraft brightens when the
-          // sweep beam passes its bearing, then dims until the next pass comes back around
-          // (one full rotation later) rather than staying uniformly lit the whole time.
-          const blipAngle = Math.atan2(pt.y - centerPt.y, pt.x - centerPt.x);
-          const angDiff = Math.abs(((sweepAngle - blipAngle + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI);
-          if (ac.hex && angDiff < 0.02) aircraftLastSweepHit[ac.hex] = Date.now();
-          let fadeAlpha = 1;
-          if (!isLocked && ac.hex) {
-            if (aircraftLastSweepHit[ac.hex] === undefined) aircraftLastSweepHit[ac.hex] = Date.now();
-            const elapsed = Date.now() - aircraftLastSweepHit[ac.hex];
-            const t = Math.min(1, elapsed / SWEEP_FADE_MS);
-            fadeAlpha = 1 - t * (1 - SWEEP_FADE_MIN_ALPHA);
-          }
-
           ctx.save();
-          ctx.globalAlpha = fadeAlpha;
 
           if (isLocked) {
             const pulseRadius = 12 + Math.sin(Date.now() / 150) * 3;
@@ -2584,17 +2558,12 @@
           // altitudeColor() and ALTITUDE_BANDS above.
           const silColor = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : altitudeColor(ac.alt_baro));
 
-          // Silhouette is always drawn at full brightness - only the label fades with the
-          // sweep, so the aircraft shape itself stays clearly visible between sweep passes.
-          ctx.globalAlpha = 1;
-
           // Live pw-silhouettes lookup - specific type designator first, falling back to the
           // aircraft's ADS-B category's generic silhouette. Draws nothing (beyond the label)
           // if neither is covered, or while the lookup is still in flight - see
           // drawPwSilhouette/resolvePwLookupKey above.
           drawPwSilhouette(ctx, ac, pt, heading, silColor);
 
-          ctx.globalAlpha = fadeAlpha;
           ctx.font = 'bold 9px system-ui';
           const label = ac.flight ? ac.flight.trim() : ac.hex;
           const altText = ac.alt_baro ? ` FL${Math.round(ac.alt_baro / 100)}` : '';
@@ -2634,7 +2603,7 @@
           ctx.fillStyle = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : '#7B3F00');
           ctx.fillText(labelText, labelBoxX + labelPadX, labelBoxY + labelBoxH - labelPadY - 2);
 
-          ctx.restore(); // matches the fadeAlpha save() above
+          ctx.restore();
         });
       }
     }
