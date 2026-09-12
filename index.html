@@ -767,6 +767,13 @@
   </script>
 
   <script>
+    // Node.js CORS proxy hosted on Wispbyte (see server.js) - forwards both
+    // the adsb.fi point-lookup and the adsb.lol routeset POST, since neither
+    // upstream sends Access-Control-Allow-Origin for browser requests from
+    // arbitrary origins. Shared at module scope since both fetchLiveFlights()
+    // and queryAdsbLolRoute() need it.
+    const WORKER_URL = 'https://cors-proxy-radar.wisp.uno';
+    const ROUTESET_PATH = '/api/0/routeset';
     const userConfig = { lat: 52.9529, lon: -0.9547, radiusNM: 35 };
     let map = null;
     let canvas = null;
@@ -1341,7 +1348,14 @@
       const callsign = (ac && ac.flight || '').trim().toUpperCase();
       if (!callsign || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return null;
       try {
-        const res = await fetch('https://api.adsb.lol/api/0/routeset', {
+        // api.adsb.lol doesn't send Access-Control-Allow-Origin for browser requests
+        // from arbitrary origins either, so this goes through the same Wispbyte proxy
+        // as the point lookups above (see server.js) rather than hitting adsb.lol
+        // directly. Note: adsb.lol is known to 403 datacenter/cloud IPs, which is what
+        // this proxy's own outbound requests look like to it - if that happens here,
+        // this call fails gracefully (falls through to queryAdsbdb/queryHexdb below)
+        // rather than breaking anything.
+        const res = await fetch(`${WORKER_URL}${ROUTESET_PATH}`, {
           method: 'POST',
           headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
           cache: 'no-store',
@@ -2003,15 +2017,14 @@
       // response directly - no client-side header or fetch option can add a header the
       // server itself doesn't send.
       //
-      // WORKER_URL is a dedicated Cloudflare Worker (see worker/index.js) that forwards
-      // this request to adsb.lol and adds the header back - this is the reliable, owned
-      // fix. Fill it in with your deployed *.workers.dev URL once it's up.
+      // WORKER_URL (declared at module scope, top of script) is the Node.js proxy hosted
+      // on Wispbyte (see server.js) that forwards this request to adsb.fi and adds the
+      // CORS header back - this is the reliable, owned fix.
       //
-      // Until then (or if the Worker ever goes down), allorigins.win is kept as a free
+      // Until then (or if it ever goes down), allorigins.win is kept as a free
       // third-party fallback proxy - no uptime guarantee, so it's listed second rather
       // than relied on alone. (corsproxy.io was tried first but now requires a paid API
       // key for anonymous use and started returning 401s.)
-      const WORKER_URL = 'https://cors-proxy-radar.wisp.uno'; // Node.js proxy hosted on Wispbyte (see server.js)
       const FALLBACK_PROXY = 'https://api.allorigins.win/raw?url=';
       const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
       const endpoints = [
