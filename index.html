@@ -395,6 +395,12 @@
       border-right: none;
     }
 
+    /* Invisible on desktop - see the HTML comment above .scrollboard-metrics for why this
+       wrapper exists at all. */
+    .scrollboard-metrics {
+      display: contents;
+    }
+
     .airline-heading {
       font-size: 1.05rem;
       font-weight: 800;
@@ -489,6 +495,174 @@
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
+
+    /* ===================================================================
+       Mobile layout
+       ===================================================================
+       Desktop is a fixed 2-column grid (radar + a 340px sidebar) with a
+       wide horizontal scrollboard footer - all of which is too cramped to
+       read on a phone. Below ~700px wide in portrait, this switches to:
+         - radar on top, full width
+         - the military-transponder list as a horizontal scroll strip
+           instead of competing with the radar for vertical space
+         - the scrollboard reflowed into 2 rows (photo+flight info, then
+           the three metric groups) instead of one squeezed-together row
+       A short/landscape phone gets a lighter touch below - the side-by-side
+       layout already suits a wide-but-short screen, it just needs a
+       narrower sidebar and smaller text to fit.
+    */
+    @media (max-width: 700px) and (orientation: portrait) {
+      main {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr) 96px;
+        padding: 0.25rem;
+        gap: 0.25rem;
+      }
+
+      .sidebar {
+        height: 96px;
+      }
+
+      .panel {
+        padding: 0.35rem 0.4rem;
+      }
+
+      .panel-title {
+        font-size: 0.6rem;
+        margin-bottom: 0.25rem;
+      }
+
+      /* Vertical list -> horizontal scroll strip, so it takes a fixed, short
+         height instead of fighting the radar for vertical space. */
+      .aircraft-grid {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 0.4rem;
+      }
+
+      .ac-card {
+        flex: 0 0 auto;
+        width: 230px;
+      }
+
+      #status-bar {
+        display: none;
+      }
+
+      #altitude-legend {
+        font-size: 0.52rem;
+        padding: 3px 5px;
+      }
+
+      footer {
+        height: 128px;
+        padding: 0.3rem;
+      }
+
+      /* 2-row grid: photo spans both rows on the left, flight info sits
+         top-right, the metric columns (the .scrollboard-metrics wrapper -
+         display:contents on desktop) become the second row. */
+      .scrollboard {
+        display: grid;
+        grid-template-columns: 80px 1fr;
+        grid-template-rows: auto 1fr;
+        align-items: stretch;
+        column-gap: 0.4rem;
+        row-gap: 0.15rem;
+        padding: 0.3rem;
+      }
+
+      .logo-container {
+        grid-column: 1;
+        grid-row: 1 / 3;
+        height: 100%;
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .banner-col-info {
+        grid-column: 2;
+        grid-row: 1;
+        min-width: 0;
+        max-width: 100%;
+        padding: 0 0.3rem;
+        border-right: none;
+      }
+
+      .scrollboard-metrics {
+        grid-column: 2;
+        grid-row: 2;
+        display: flex;
+        min-width: 0;
+      }
+
+      .scrollboard-metrics .banner-col {
+        padding: 0 0.3rem;
+      }
+
+      .airline-heading {
+        font-size: 0.85rem;
+      }
+
+      .aircraft-meta {
+        font-size: 0.62rem;
+      }
+
+      .route-container {
+        font-size: 0.62rem;
+      }
+
+      .primary-metric {
+        font-size: 0.85rem;
+      }
+
+      .secondary-metric {
+        font-size: 0.62rem;
+      }
+
+      .sub-title {
+        font-size: 0.5rem;
+      }
+    }
+
+    /* Short/landscape phones: keep the desktop side-by-side arrangement (a
+       wide-but-short screen suits it better than stacking) but narrow the
+       sidebar and shrink text so both columns actually fit. */
+    @media (max-height: 500px) and (orientation: landscape) {
+      main {
+        grid-template-columns: 1fr 200px;
+      }
+
+      .panel-title {
+        font-size: 0.58rem;
+      }
+
+      .ac-thumb {
+        width: 64px;
+        height: 42px;
+      }
+
+      footer {
+        height: 90px;
+      }
+
+      .airline-heading {
+        font-size: 0.85rem;
+      }
+
+      .primary-metric {
+        font-size: 0.9rem;
+      }
+
+      .secondary-metric {
+        font-size: 0.65rem;
+      }
+
+      .logo-container {
+        min-width: 80px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -545,24 +719,31 @@
         </div>
       </div>
 
-      <div class="banner-col metric-group">
-        <div class="sub-title">Range & Kinematics</div>
-        <div id="sb-distance" class="primary-metric">-- NM</div>
-        <div id="sb-alt" class="secondary-metric">Alt: -- ft</div>
-        <div id="sb-speed" class="secondary-metric">Spd: -- kts</div>
-      </div>
+      <!-- On desktop this wrapper is display:contents (invisible to layout - the three
+           columns below still lay out as direct flex children of .scrollboard, unchanged).
+           On mobile it becomes the second row of a 2-row scrollboard grid - see the
+           mobile media queries - so the metric columns can be grouped/reflowed as a unit
+           without duplicating them per breakpoint. -->
+      <div class="scrollboard-metrics">
+        <div class="banner-col metric-group">
+          <div class="sub-title">Range & Kinematics</div>
+          <div id="sb-distance" class="primary-metric">-- NM</div>
+          <div id="sb-alt" class="secondary-metric">Alt: -- ft</div>
+          <div id="sb-speed" class="secondary-metric">Spd: -- kts</div>
+        </div>
 
-      <div class="banner-col metric-group">
-        <div class="sub-title">Vector & V/S</div>
-        <div id="sb-rate" class="secondary-metric" style="font-weight: 700;">Rate: --</div>
-        <div id="sb-heading" class="secondary-metric">Hdng: --°</div>
-        <div id="sb-bearing" class="secondary-metric" style="font-size:0.72rem; color:var(--text-dim);">Bearing: --°</div>
-      </div>
+        <div class="banner-col metric-group">
+          <div class="sub-title">Vector & V/S</div>
+          <div id="sb-rate" class="secondary-metric" style="font-weight: 700;">Rate: --</div>
+          <div id="sb-heading" class="secondary-metric">Hdng: --°</div>
+          <div id="sb-bearing" class="secondary-metric" style="font-size:0.72rem; color:var(--text-dim);">Bearing: --°</div>
+        </div>
 
-      <div class="banner-col metric-group">
-        <div class="sub-title">Time</div>
-        <div id="sb-flight-time" class="secondary-metric">Flight Time: --</div>
-        <div id="sb-eta" class="secondary-metric">ETA: --</div>
+        <div class="banner-col metric-group">
+          <div class="sub-title">Time</div>
+          <div id="sb-flight-time" class="secondary-metric">Flight Time: --</div>
+          <div id="sb-eta" class="secondary-metric">ETA: --</div>
+        </div>
       </div>
     </div>
   </footer>
