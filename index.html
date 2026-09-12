@@ -752,6 +752,20 @@
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
           onerror="console.error('LEAFLET FAILED TO LOAD - CHECK NETWORK');"></script>
 
+  <!-- On-phone debug console, opt-in via ?debug=1 in the URL. No Mac/devtools access on
+       this project's usual dev device, so this is the only way to see console.log/error
+       output and failed network requests directly on the phone that's showing the bug.
+       Loads eruda (an on-page devtools panel) only when the flag is present - zero cost
+       and no visible change otherwise. -->
+  <script>
+    if (new URLSearchParams(window.location.search).get('debug') === '1') {
+      const erudaScript = document.createElement('script');
+      erudaScript.src = 'https://cdn.jsdelivr.net/npm/eruda';
+      erudaScript.onload = () => window.eruda && window.eruda.init();
+      document.head.appendChild(erudaScript);
+    }
+  </script>
+
   <script>
     const userConfig = { lat: 52.9529, lon: -0.9547, radiusNM: 35 };
     let map = null;
