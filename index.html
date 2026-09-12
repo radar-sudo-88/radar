@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Live ADSB Airspace Scope</title>
+  <title>Live ADSB Airspace Scope (Retro Radar Wall Board)</title>
   
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
 
@@ -154,12 +154,10 @@
       width: 100%;
       height: 100%;
       z-index: 1;
-      /* A single filter pass (just brightness) instead of stacking brightness+contrast+
-         saturate - each extra filter function is another full-surface compositing pass,
-         which adds up on a Pi's software/GPU-lite rendering path for an element this size. */
-      filter: brightness(1.1);
+      filter: brightness(1.15) contrast(1.05) saturate(1.1);
       opacity: 0.7;
       pointer-events: none;
+      transition: clip-path 0.2s ease-out;
     }
 
     canvas {
@@ -500,7 +498,7 @@
 
   <!-- Tap-to-start overlay: browsers block AudioContext/SpeechSynthesis until a user gesture -->
   <div id="start-overlay">
-    <div class="start-title"><span class="pulse-dot"></span>&nbsp; ADS-B Radar Scope</div>
+    <div class="start-title"><span class="pulse-dot"></span>&nbsp; Retro ADSB Radar Scope</div>
     <div class="start-sub">Tap or click anywhere to start the feed and enable audio alerts</div>
   </div>
 
@@ -585,6 +583,10 @@
     let pollBackoffUntil = 0;
     let consecutive429s = 0;
     const aircraftTrails = {};
+    // hex -> Date.now() of the last time the sweep beam passed this aircraft's bearing (CRT-style
+    // "blip brightens on sweep pass, fades until the next one" - see drawRadarScope). The locked
+    // aircraft is exempt and always drawn at full brightness regardless of this.
+    const aircraftLastSweepHit = {};
     // hex -> Date.now() the first time this aircraft was seen this session - used for the
     // scrollboard's "Flight Time" (time tracked, not a real off-block/departure timestamp,
     // which ADS-B doesn't give us - see updateNearestScrollboard).
@@ -604,239 +606,156 @@
     let testAircraft = null;
     let testAircraftExpiryAt = 0;
 
-    // callsign -> {fromCode, toCode, fromName, toName, source: 'adsbdb'|'hexdb'|'estimated'},
-    // or null once every source has been queried and confirmed there's no real data
-    // (avoids re-querying every poll for callsigns nobody has data on)
-    const routeCache = {};
-    let adsbdbBackoffUntil = 0;
-    let hexdbBackoffUntil = 0;
-
     // Simple in-memory photo cache so we don't re-fetch the same aircraft's photo every 12s poll
     const photoCache = {}; // key -> url string, or null for known-empty
 
     // ---------------------------------------------------------------------
     // Radar-scope silhouettes: plane-watch/pw-silhouettes (CC BY-NC-SA 4.0 -
-    // https://github.com/plane-watch/pw-silhouettes), fetched live at runtime - individual
-    // source SVGs, not the prebuilt spritesheet.png/.json this used to vendor locally.
-    //
-    // Why individual SVGs and not that prebuilt sheet: the sheet only exists as a GitHub
-    // Release asset, and release assets carry no Access-Control-Allow-Origin header (neither
-    // on the releases/download/... redirect nor on the release-assets.githubusercontent.com
-    // host it points to) - a browser fetch() for it is blocked by CORS no matter how it's
-    // requested. The individual SVG *sources* that sheet gets built from, by contrast, are
-    // committed straight into the git tree, and raw.githubusercontent.com (which serves
-    // git-tracked file contents) does send proper CORS headers - so those are fetchable
-    // directly, no proxy or build step required.
-    //
-    // Trade-off worth knowing about: the prebuilt sheet's JSON also carried per-type
-    // anchor/scale/noRotate/animation-frame metadata (e.g. an A380 drawn bigger than a light
-    // single, a helicopter's rotor not spinning with its heading). None of that is assumed
-    // to live in any particular field of this repo's raw metadata, so every silhouette here
-    // draws at one fixed size, centred, and always rotated to heading. Restoring per-type
-    // sizing is possible but needs confirming this repo's actual JSON schema first, which
-    // isn't something this file can do on its own - see the two-pass lookup below.
-    //
-    // Lookup works in two passes, since the repo keeps the artwork and the
-    // designator/category -> artwork mapping as separate files:
-    //   1. Look for an SVG file whose own name matches the key directly (covers the case
-    //      where artwork is simply named after its type designator/category, e.g. a file
-    //      literally called "B738.svg" somewhere in the tree).
-    //   2. Otherwise look for a JSON metadata file under airframes/ or generics/ named after
-    //      the key (e.g. airframes/B738.json) and pull whatever path it points to for the
-    //      real artwork - see findSvgRefInJson, which hunts for an ".svg"-looking string
-    //      rather than assuming one specific field name, so it keeps working even if that
-    //      schema turns out to differ from what's guessed here.
-    // A key that matches neither draws nothing beyond its label, same as before - there's no
-    // hand-drawn glyph fallback.
-    //
-    // Every (designator|colour) pair is fetched, recoloured, and rasterised at most once per
-    // session - see pwSilhouetteCache. Resolution is async and the render loop can't block on
-    // it, so drawPwSilhouette() kicks a lookup off in the background the first time a given
-    // key is seen and simply draws nothing for it that frame; it picks up automatically once
-    // the lookup resolves, typically well within one poll cycle.
+    // https://github.com/plane-watch/pw-silhouettes), vendored locally as a prebuilt
+    // spritesheet rather than fetched from a CDN at runtime - see pw-silhouettes/ next to
+    // this file (spritesheet.png + spritesheet.json + LICENSE). spritesheet.png is a grid
+    // of 72x72px cells, each shape filled white / stroked black; spritesheet.json maps
+    // every ICAO type designator (ac.t, e.g. "B738") and every ADS-B emitter category
+    // (ac.category, e.g. "A7") to a cell (or an animated sequence of cells), an anchor
+    // point, and a scale. A designator with no specific artwork falls back to its
+    // category's generic silhouette (see resolvePwSpriteKey); if even that's missing -
+    // e.g. no category reported at all - nothing is drawn for that aircraft beyond its
+    // label. There is no hand-drawn glyph fallback any more.
     // ---------------------------------------------------------------------
-    const PW_REPO = 'plane-watch/pw-silhouettes';
-    const PW_TREE_API_URL = `https://api.github.com/repos/${PW_REPO}/git/trees/main?recursive=1`;
-    const PW_RAW_BASE = `https://raw.githubusercontent.com/${PW_REPO}/main`;
+    const PW_SPRITESHEET_PNG_PATH = './pw-silhouettes/spritesheet.png';
+    const PW_SPRITESHEET_JSON_PATH = './pw-silhouettes/spritesheet.json';
 
-    // ADS-B emitter category letter -> this repo's internal numeric "typeCode" (per the
-    // comment that used to live here referencing generics/*.json + tools/build_spritesheet -
-    // genericToSprite key "${typeCode}/${categoryNumber}", e.g. category "A7" (rotorcraft) ->
-    // "4/7"). resolvePwSvgUrl() below tries a couple of separator variants on this key since
-    // the exact filename convention isn't confirmed.
+    let pwSpritesheetImg = null;
+    let pwSpritesheetMeta = null;
+    let pwSpritesheetReady = false;
+
+    // Full recoloured copies of the sheet, keyed by target hex colour - see getRecoloredSheet().
+    const pwRecoloredSheetCache = {};
+
+    async function loadPwSpritesheet() {
+      try {
+        const [meta, img] = await Promise.all([
+          fetch(PW_SPRITESHEET_JSON_PATH).then(res => res.json()),
+          new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve(image);
+            image.onerror = () => reject(new Error('failed to decode spritesheet.png'));
+            image.src = PW_SPRITESHEET_PNG_PATH;
+          })
+        ]);
+        pwSpritesheetMeta = meta;
+        pwSpritesheetImg = img;
+        pwSpritesheetReady = true;
+        console.debug(`[pw-silhouettes] spritesheet loaded (${Object.keys(meta.sprites).length} sprites)`);
+      } catch (err) {
+        console.warn('[pw-silhouettes] failed to load local spritesheet -', err);
+      }
+    }
+
+    function hexToRgb(hex) {
+      const clean = hex.replace('#', '');
+      return {
+        r: parseInt(clean.substring(0, 2), 16),
+        g: parseInt(clean.substring(2, 4), 16),
+        b: parseInt(clean.substring(4, 6), 16)
+      };
+    }
+
+    // ADS-B emitter category letter -> this repo's internal numeric "typeCode" (see its
+    // generics/*.json + tools/build_spritesheet - the genericToSprite key is
+    // "${typeCode}/${categoryNumber}", e.g. category "A7" (rotorcraft) -> "4/7").
     const PW_CATEGORY_LETTER_TO_TYPECODE = { A: 4, B: 3, C: 2, D: 1 };
 
-    let pwTreePromise = null; // resolves to {svgByName: Map<string,string>, jsonPaths: Set<string>}
-
-    // Fetches the full repo file tree once (via one git/trees?recursive=1 call) and indexes
-    // every .svg file by its own basename, and every .json path verbatim, so lookups below
-    // never have to guess whether a given path actually exists before fetching it.
-    async function loadPwRepoTree() {
-      if (pwTreePromise) return pwTreePromise;
-      pwTreePromise = (async () => {
-        const res = await fetch(PW_TREE_API_URL, { headers: { Accept: 'application/vnd.github+json' } });
-        if (!res.ok) throw new Error(`pw-silhouettes tree API returned ${res.status}`);
-        const data = await res.json();
-        const svgByName = new Map();
-        const jsonPaths = new Set();
-        (data.tree || []).forEach(entry => {
-          if (entry.type !== 'blob') return;
-          if (/\.svg$/i.test(entry.path)) {
-            svgByName.set(entry.path.split('/').pop().replace(/\.svg$/i, '').toUpperCase(), entry.path);
-          } else if (/\.json$/i.test(entry.path)) {
-            jsonPaths.add(entry.path);
-          }
-        });
-        console.log(`[pw-silhouettes] repo tree loaded (${svgByName.size} svg files, ${jsonPaths.size} json files)`);
-        return { svgByName, jsonPaths };
-      })().catch(err => {
-        console.warn('[pw-silhouettes] failed to load repo file tree -', err);
-        pwTreePromise = null; // let the next lookup retry instead of caching the failure forever
-        throw err;
-      });
-      return pwTreePromise;
-    }
-
-    // Recursively hunts a parsed JSON metadata blob for any string value that looks like a
-    // path to an SVG, rather than reading one specific field name - keeps working even if
-    // this repo's actual metadata schema differs from what's assumed here.
-    function findSvgRefInJson(node) {
-      if (typeof node === 'string' && /\.svg$/i.test(node)) return node;
-      if (Array.isArray(node)) {
-        for (const item of node) {
-          const found = findSvgRefInJson(item);
-          if (found) return found;
-        }
-        return null;
-      }
-      if (node && typeof node === 'object') {
-        for (const key of Object.keys(node)) {
-          const found = findSvgRefInJson(node[key]);
-          if (found) return found;
-        }
-      }
-      return null;
-    }
-
-    // Resolves one lookup key (a type designator like "B738", or a generic key like "4/7")
-    // to a fetchable raw.githubusercontent.com URL for its SVG artwork, or null if nothing
-    // in the repo covers it.
-    async function resolvePwSvgUrl(key) {
-      const { svgByName, jsonPaths } = await loadPwRepoTree();
-
-      const directName = key.replace('/', '-').toUpperCase();
-      if (svgByName.has(directName)) return `${PW_RAW_BASE}/${svgByName.get(directName)}`;
-
-      const candidatePaths = [
-        `airframes/${key}.json`,
-        `generics/${key}.json`,
-        `generics/${key.replace('/', '-')}.json`,
-        `generics/${key.replace('/', '_')}.json`
-      ];
-      for (const candidate of candidatePaths) {
-        if (!jsonPaths.has(candidate)) continue;
-        try {
-          const res = await fetch(`${PW_RAW_BASE}/${candidate}`);
-          if (!res.ok) continue;
-          const meta = await res.json();
-          const ref = findSvgRefInJson(meta);
-          if (!ref) continue;
-          const refBase = ref.split('/').pop().replace(/\.svg$/i, '').toUpperCase();
-          if (svgByName.has(refBase)) return `${PW_RAW_BASE}/${svgByName.get(refBase)}`;
-          return `${PW_RAW_BASE}/${ref.replace(/^\/+/, '')}`;
-        } catch (err) {
-          console.log(`[pw-silhouettes] metadata lookup failed for ${candidate} -`, err);
-        }
-      }
-      return null;
-    }
-
-    // Resolves an aircraft to a lookup key: its specific type designator first, then its
-    // ADS-B emitter category's generic key, or null if neither is usable.
-    function resolvePwLookupKey(ac) {
+    // Resolves an aircraft to a sprite key: specific type designator first, then its
+    // ADS-B category's generic silhouette, or null if neither is covered.
+    function resolvePwSpriteKey(ac) {
+      if (!pwSpritesheetMeta) return null;
       const designator = (ac.t || '').trim().toUpperCase();
-      if (designator) return designator;
+      if (designator && pwSpritesheetMeta.airframeToSprite[designator]) {
+        return pwSpritesheetMeta.airframeToSprite[designator];
+      }
       const category = (ac.category || '').trim().toUpperCase();
       const typeCode = PW_CATEGORY_LETTER_TO_TYPECODE[category[0]];
       const number = category[1];
-      if (typeCode && number) return `${typeCode}/${number}`;
+      if (typeCode && number) {
+        const genericKey = `${typeCode}/${number}`;
+        if (pwSpritesheetMeta.genericToSprite[genericKey]) return pwSpritesheetMeta.genericToSprite[genericKey];
+      }
       return null;
     }
 
-    // Recolours raw SVG source text for one target colour. The artwork is filled white /
-    // stroked black on a transparent background (per that repo's CONTRIBUTING.md), so this is
-    // a plain find/replace of those two colours rather than a pixel remap - cheaper than the
-    // old getImageData/putImageData recolour pass, since the browser rasterises each shape
-    // fresh at whatever size it's drawn instead of scaling a fixed raster cell.
-    function recolorSvgText(svgText, colorHex) {
-      const strokeHex = '#020704';
-      return svgText
-        .replace(/#fff(?:fff)?\b/gi, colorHex)
-        .replace(/\bwhite\b/gi, colorHex)
-        .replace(/#000(?:000)?\b/gi, strokeHex)
-        .replace(/\bblack\b/gi, strokeHex);
-    }
+    // Recolours a full copy of the spritesheet for one target colour, once, and caches it -
+    // every aircraft rendered in that colour then just blits a rect out of the cached canvas
+    // (no per-aircraft/per-frame recolouring work in the render loop). Sprites are white
+    // fill / black stroke on a transparent background (CONTRIBUTING.md in that repo), so
+    // this is a duotone remap: each pixel's grey level (0 = stroke, 1 = fill) picks how far
+    // to blend from the canvas-background stroke colour toward the target fill colour,
+    // leaving the original alpha untouched - reproducing the same look the old per-SVG
+    // fill/stroke string-substitution gave.
+    function getRecoloredSheet(colorHex) {
+      if (pwRecoloredSheetCache[colorHex]) return pwRecoloredSheetCache[colorHex];
+      if (!pwSpritesheetReady) return null;
 
-    // "key|colour" -> HTMLImageElement (resolved), or null (confirmed no artwork), or absent
-    // (not yet looked up). Populated in the background by loadPwSilhouetteImage(), read
-    // synchronously by drawPwSilhouette() in the render loop.
-    const pwSilhouetteCache = new Map();
+      const w = pwSpritesheetImg.naturalWidth;
+      const h = pwSpritesheetImg.naturalHeight;
+      const src = document.createElement('canvas');
+      src.width = w;
+      src.height = h;
+      const sctx = src.getContext('2d');
+      sctx.drawImage(pwSpritesheetImg, 0, 0);
+      const imageData = sctx.getImageData(0, 0, w, h);
+      const px = imageData.data;
 
-    async function loadPwSilhouetteImage(key, colorHex) {
-      const cacheKey = `${key}|${colorHex}`;
-      if (pwSilhouetteCache.has(cacheKey)) return;
-      pwSilhouetteCache.set(cacheKey, undefined); // claim it so concurrent frames don't double-fetch
-      try {
-        const svgUrl = await resolvePwSvgUrl(key);
-        if (!svgUrl) {
-          pwSilhouetteCache.set(cacheKey, null);
-          return;
-        }
-        const svgRes = await fetch(svgUrl);
-        if (!svgRes.ok) throw new Error(`SVG fetch returned ${svgRes.status}`);
-        const recolored = recolorSvgText(await svgRes.text(), colorHex);
-        const blobUrl = URL.createObjectURL(new Blob([recolored], { type: 'image/svg+xml' }));
-        const image = await new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = () => reject(new Error('failed to decode recoloured SVG'));
-          img.src = blobUrl;
-        });
-        URL.revokeObjectURL(blobUrl);
-        pwSilhouetteCache.set(cacheKey, image);
-      } catch (err) {
-        console.log(`[pw-silhouettes] failed to load silhouette for ${key} -`, err);
-        pwSilhouetteCache.set(cacheKey, null);
+      const strokeRgb = hexToRgb('#020704');
+      const fillRgb = hexToRgb(colorHex);
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i + 3] === 0) continue;
+        const grey = px[i] / 255;
+        px[i] = strokeRgb.r + (fillRgb.r - strokeRgb.r) * grey;
+        px[i + 1] = strokeRgb.g + (fillRgb.g - strokeRgb.g) * grey;
+        px[i + 2] = strokeRgb.b + (fillRgb.b - strokeRgb.b) * grey;
       }
+      sctx.putImageData(imageData, 0, 0);
+      pwRecoloredSheetCache[colorHex] = src;
+      return src;
     }
 
-    // Draws an aircraft's silhouette at (pt.x, pt.y), rotated to its heading. Returns whether
-    // anything was actually drawn - false while a lookup is still in flight (nothing drawn
-    // that frame, retried automatically once it resolves) or once it's confirmed there's no
-    // artwork for this aircraft.
+    // Draws an aircraft's silhouette at (pt.x, pt.y), rotated to its heading unless the
+    // sprite says not to. Returns whether anything was actually drawn.
     function drawPwSilhouette(ctx, ac, pt, heading, colorHex) {
-      const key = resolvePwLookupKey(ac);
-      if (!key) return false;
-      const cached = pwSilhouetteCache.get(`${key}|${colorHex}`);
-      if (cached === undefined) {
-        loadPwSilhouetteImage(key, colorHex); // fire-and-forget; picked up on a later frame
-        return false;
-      }
-      if (!cached) return false;
+      const spriteKey = resolvePwSpriteKey(ac);
+      if (!spriteKey) return false;
+      const spriteMeta = pwSpritesheetMeta.sprites[spriteKey];
+      if (!spriteMeta) return false;
+      const sheet = getRecoloredSheet(colorHex);
+      if (!sheet) return false;
 
-      // Fit the longer side to a fixed 22px on-scope footprint (matching the old spritesheet
-      // baseline) while keeping the SVG's own aspect ratio, since there's no per-type scale
-      // metadata being read here (see the header comment above).
-      const iw = cached.naturalWidth || 1;
-      const ih = cached.naturalHeight || 1;
-      const drawScale = 22 / Math.max(iw, ih);
-      const w = iw * drawScale;
-      const h = ih * drawScale;
+      const cellSize = pwSpritesheetMeta.metadata.spriteWidth;
+      const cols = Math.floor(sheet.width / cellSize);
+      const frameIdx = spriteMeta.frameTime
+        ? Math.floor(Date.now() / spriteMeta.frameTime) % spriteMeta.ids.length
+        : 0;
+      const id = spriteMeta.ids[frameIdx];
+      const sx = (id % cols) * cellSize;
+      const sy = Math.floor(id / cols) * cellSize;
+
+      // Scale to roughly the same on-scope footprint the old hand-drawn/CDN glyphs used,
+      // then let each sprite's own `scale` (bigger for e.g. an A380, smaller for a light
+      // single) adjust from there.
+      const cellPx = 22 * (spriteMeta.scale || 1);
+      const anchor = spriteMeta.anchor || { x: cellSize / 2, y: cellSize / 2 };
 
       ctx.save();
       ctx.translate(pt.x, pt.y);
-      ctx.rotate((heading * Math.PI) / 180);
-      ctx.drawImage(cached, -w / 2, -h / 2, w, h);
+      if (!spriteMeta.noRotate) ctx.rotate((heading * Math.PI) / 180);
+      ctx.drawImage(
+        sheet,
+        sx, sy, cellSize, cellSize,
+        -(anchor.x / cellSize) * cellPx,
+        -(anchor.y / cellSize) * cellPx,
+        cellPx,
+        cellPx
+      );
       ctx.restore();
       return true;
     }
@@ -889,16 +808,9 @@
 
       canvas = document.getElementById('radarCanvas');
       ctx = canvas.getContext('2d');
-      // Bilinear smoothing on the scaled silhouette drawImage() calls (72px sprite cells ->
-      // ~22px on scope) is noticeably heavier on the Pi's software/Mesa canvas path than on a
-      // desktop GPU, and with several aircraft redrawn 30x/sec that cost adds up into visible
-      // choppiness. Nearest-neighbour also fits the retro-scope look better anyway.
-      ctx.imageSmoothingEnabled = false;
 
       initMap();
-      // Warms the repo-tree cache immediately at startup rather than waiting for the first
-      // aircraft that needs a silhouette lookup, so that first lookup doesn't stall on it too.
-      loadPwRepoTree().catch(() => {}); // failure already logged inside loadPwRepoTree()
+      loadPwSpritesheet();
       resizeCanvas();
       window.addEventListener('resize', resizeCanvas);
       buildAltitudeLegend();
@@ -906,7 +818,6 @@
       applyNightMode();
       setInterval(applyNightMode, 60000);
       setInterval(cycleBurnInShift, BURN_IN_SHIFT_INTERVAL_MS);
-      setInterval(tickFlightTimeDisplay, 1000);
 
       requestAnimationFrame(drawRadarScope);
       fetchLiveFlights();
@@ -1159,205 +1070,152 @@
       return entry ? { lat: entry.lat, lon: entry.lon } : null;
     }
 
-    // Formats a millisecond duration as "Xh YYm" (>=1h) or "Ym Ss" (<1h), used for the
-    // scrollboard's Flight Time field.
-    function formatDuration(ms) {
-      const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-      const hours = Math.floor(totalSeconds / 3600);
-      const minutes = Math.floor((totalSeconds % 3600) / 60);
-      const seconds = totalSeconds % 60;
-      if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-      return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+
+    // ---------------------------------------------------------------------
+    // Route resolution uses API data only. No callsign/heading heuristics are used because
+    // they can turn an unknown route into a convincing but completely false destination.
+    // Cache entries are keyed by aircraft hex + callsign and expire so a reused callsign cannot
+    // keep an old route forever.
+    const ROUTE_CACHE_TTL_MS = 5 * 60 * 1000;
+    const ROUTE_MAX_STALE_MS = 15 * 60 * 1000;
+    const routeCache = {};
+    let adsbdbBackoffUntil = 0;
+    let hexdbBackoffUntil = 0;
+
+    function routeCacheKey(ac) {
+      const hex = (ac && ac.hex || '').trim().toUpperCase();
+      const callsign = (ac && ac.flight || '').trim().toUpperCase();
+      return `${hex}|${callsign}`;
     }
 
-    // Rough ETA for the scrollboard: straight-line (great-circle) distance from the
-    // aircraft's current position to its destination, divided by current ground speed -
-    // no account for remaining climb/descent, routing, or wind, so treat this as a ballpark
-    // rather than a precise arrival time. Returns '--' when we don't have real destination
-    // coordinates (e.g. a registration-override flavour route, or a heuristic guess whose
-    // airport code isn't in our small local table) or a usable ground speed.
-    function computeEtaText(ac, route) {
-      if (!route) { console.log('[ETA] no route object at all for', ac.flight || ac.hex); return '--'; }
-      const destCoords = getDestinationCoords(route);
-      const speedKts = ac.gs;
-      if (!destCoords || !speedKts || speedKts <= 0) {
-        console.log('[ETA] blocked -', {
-          callsign: ac.flight || ac.hex,
-          routeSource: route.source,
-          toCode: route.toCode,
-          toLat: route.toLat,
-          toLon: route.toLon,
-          destCoordsResolved: !!destCoords,
-          gs: ac.gs
-        });
-        return '--';
+    function validAirportCode(code) {
+      return typeof code === 'string' && /^[A-Z0-9]{3,4}$/.test(code.trim().toUpperCase());
+    }
+
+    function normaliseRoute(route, source) {
+      if (!route || !validAirportCode(route.fromCode) || !validAirportCode(route.toCode)) return null;
+      const fromCode = route.fromCode.trim().toUpperCase();
+      const toCode = route.toCode.trim().toUpperCase();
+      if (fromCode === toCode) return null;
+      const clean = {
+        fromCode, toCode,
+        fromName: typeof route.fromName === 'string' ? route.fromName.trim() : '',
+        toName: typeof route.toName === 'string' ? route.toName.trim() : '',
+        source
+      };
+      if (Number.isFinite(route.toLat) && Number.isFinite(route.toLon) && route.toLat >= -90 && route.toLat <= 90 && route.toLon >= -180 && route.toLon <= 180) {
+        clean.toLat = route.toLat; clean.toLon = route.toLon;
       }
-      const distNM = calcDistanceNM(ac.lat, ac.lon, destCoords.lat, destCoords.lon);
-      const hoursRemaining = distNM / speedKts;
-      if (!isFinite(hoursRemaining) || hoursRemaining <= 0) return '--';
-
-      const etaDate = new Date(Date.now() + hoursRemaining * 3600 * 1000);
-      const clock = etaDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const remainingMin = Math.round(hoursRemaining * 60);
-      const remainingText = remainingMin >= 60
-        ? `${Math.floor(remainingMin / 60)}h ${remainingMin % 60}m`
-        : `${remainingMin}m`;
-      return `${clock} (${remainingText})`;
+      if (Number.isFinite(route.fromLat) && Number.isFinite(route.fromLon) && route.fromLat >= -90 && route.fromLat <= 90 && route.fromLon >= -180 && route.fromLon <= 180) {
+        clean.fromLat = route.fromLat; clean.fromLon = route.fromLon;
+      }
+      return clean;
     }
 
+    // Conservative sanity check. We reject only strong contradictions because aircraft can turn
+    // and ADS-B track can be temporarily stale.
+    function routePassesPositionCheck(route, ac) {
+      if (!route || !ac || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return false;
+      const hasDestinationCoords = Number.isFinite(route.toLat) && Number.isFinite(route.toLon);
+      const hasOriginCoords = Number.isFinite(route.fromLat) && Number.isFinite(route.fromLon);
+      if (!hasDestinationCoords && !hasOriginCoords) return true;
 
-    // ---------------------------------------------------------------------
-    // Route resolution: adsbdb.com -> hexdb.io -> local heuristic guess.
-    // Only ever called for the single locked/nearest aircraft (see
-    // fetchLiveFlights), never the whole liveAircraft list, so this stays
-    // well within both services' free rate limits.
-    // ---------------------------------------------------------------------
+      const speed = Number(ac.gs);
+      const track = Number(ac.track);
+      if (hasDestinationCoords && Number.isFinite(speed) && speed >= 80 && Number.isFinite(track)) {
+        const destBearing = calcBearing(ac.lat, ac.lon, route.toLat, route.toLon);
+        const diff = Math.abs(((destBearing - track + 540) % 360) - 180);
+        const destDistance = calcDistanceNM(ac.lat, ac.lon, route.toLat, route.toLon);
+        if (destDistance > 80 && diff > 125) return false;
+      }
+      if (hasOriginCoords) {
+        const originDistance = calcDistanceNM(ac.lat, ac.lon, route.fromLat, route.fromLon);
+        if (originDistance > 5000) return false;
+      }
+      return true;
+    }
 
     async function queryAdsbdb(callsign) {
-      if (Date.now() < adsbdbBackoffUntil) return undefined; // cooling off, try next poll
+      if (Date.now() < adsbdbBackoffUntil) return undefined;
       try {
-        const res = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`);
-        if (res.status === 429) {
-          adsbdbBackoffUntil = Date.now() + 30000;
-          return undefined;
-        }
-        if (!res.ok) return null; // 404 etc - confirmed no data from this source
+        const res = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
+        if (res.status === 429) { adsbdbBackoffUntil = Date.now() + 30000; return undefined; }
+        if (!res.ok) return null;
         const data = await res.json();
         const route = data && data.response && data.response.flightroute;
-        if (route && route.origin && route.destination) {
-          const from = route.origin;
-          const to = route.destination;
-          return {
-            fromCode: from.iata_code || from.icao_code,
-            toCode: to.iata_code || to.icao_code,
-            fromName: from.name + (from.municipality ? `, ${from.municipality}` : ''),
-            toName: to.name + (to.municipality ? `, ${to.municipality}` : ''),
-            // adsbdb's response includes real coordinates for both ends of the route - grab
-            // the destination ones now so ETA doesn't need a second lookup later.
-            toLat: typeof to.latitude === 'number' ? to.latitude : undefined,
-            toLon: typeof to.longitude === 'number' ? to.longitude : undefined,
-            source: 'adsbdb'
-          };
-        }
-        return null;
-      } catch (err) {
-        return null;
-      }
+        if (!route || !route.origin || !route.destination) return null;
+        return normaliseRoute({
+          fromCode: route.origin.iata_code || route.origin.icao_code,
+          toCode: route.destination.iata_code || route.destination.icao_code,
+          fromName: route.origin.name ? `${route.origin.name}${route.origin.municipality ? `, ${route.origin.municipality}` : ''}` : '',
+          toName: route.destination.name ? `${route.destination.name}${route.destination.municipality ? `, ${route.destination.municipality}` : ''}` : '',
+          fromLat: Number(route.origin.latitude), fromLon: Number(route.origin.longitude),
+          toLat: Number(route.destination.latitude), toLon: Number(route.destination.longitude)
+        }, 'adsbdb');
+      } catch (err) { console.warn('[ROUTE] ADSBDB lookup failed:', err); return null; }
     }
 
     async function queryHexdb(callsign) {
       if (Date.now() < hexdbBackoffUntil) return undefined;
       try {
-        const res = await fetch(`https://hexdb.io/api/v1/route/icao/${encodeURIComponent(callsign)}`);
-        if (res.status === 429) {
-          hexdbBackoffUntil = Date.now() + 30000;
-          return undefined;
-        }
+        const res = await fetch(`https://hexdb.io/api/v1/route/icao/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
+        if (res.status === 429) { hexdbBackoffUntil = Date.now() + 30000; return undefined; }
         if (!res.ok) return null;
         const data = await res.json();
-        // hexdb returns {"orig_icao":"EGLL","orig_iata":"LHR",...,"dest_icao":"LEBL","dest_iata":"BCN",...}
-        // treat a missing/empty pair as "no data" rather than a false-positive route.
-        if (data && (data.orig_iata || data.orig_icao) && (data.dest_iata || data.dest_icao)) {
-          return {
-            fromCode: data.orig_iata || data.orig_icao,
-            toCode: data.dest_iata || data.dest_icao,
-            fromName: data.orig_icao ? airportName(data.orig_icao) : '',
-            toName: data.dest_icao ? airportName(data.dest_icao) : '',
-            source: 'hexdb'
-          };
-        }
-        return null;
-      } catch (err) {
-        return null;
-      }
+        if (!data || !(data.orig_iata || data.orig_icao) || !(data.dest_iata || data.dest_icao)) return null;
+        const fromIcao = validAirportCode(data.orig_icao) ? data.orig_icao.toUpperCase() : null;
+        const toIcao = validAirportCode(data.dest_icao) ? data.dest_icao.toUpperCase() : null;
+        const from = fromIcao && airportDatabase[fromIcao];
+        const to = toIcao && airportDatabase[toIcao];
+        return normaliseRoute({
+          fromCode: data.orig_iata || data.orig_icao, toCode: data.dest_iata || data.dest_icao,
+          fromName: from ? from.name : '', toName: to ? to.name : '',
+          fromLat: from ? from.lat : undefined, fromLon: from ? from.lon : undefined,
+          toLat: to ? to.lat : undefined, toLon: to ? to.lon : undefined
+        }, 'hexdb');
+      } catch (err) { console.warn('[ROUTE] HexDB lookup failed:', err); return null; }
     }
 
-    // Fetches a real route for the single locked/nearest aircraft, trying adsbdb first
-    // and hexdb.io second. Caches whatever the outcome is (a route, or a confirmed "null")
-    // so we don't re-query every poll for a callsign both sources don't have.
     async function fetchRoutesForAircraft(acList) {
-      const ac = acList[0];
+      const ac = acList && acList[0];
       if (!ac) return;
       const callsign = (ac.flight || '').trim().toUpperCase();
-      if (!callsign) return;
-      if (routeCache[callsign] !== undefined) return; // already resolved (real or confirmed-empty)
+      if (!callsign || !/^[A-Z0-9]{3,8}$/.test(callsign)) return;
 
-      // Both adsbdb and hexdb only accept plain ICAO-style callsigns: letters/digits, no
-      // spaces or dashes. Tactical callsigns ("LEADER 4"), bare registrations ("G-VBZZ"),
-      // and short fragments ("C4", "P2") always fail - skip the network round-trips.
-      if (!/^[A-Z0-9]{3,8}$/.test(callsign)) {
-        routeCache[callsign] = null;
-        return;
-      }
+      const key = routeCacheKey(ac);
+      const now = Date.now();
+      const cached = routeCache[key];
+      if (cached && now - cached.checkedAt < ROUTE_CACHE_TTL_MS) return;
 
       let result = await queryAdsbdb(callsign);
-      if (result === undefined) return; // rate-limited, leave unresolved and retry next poll
+      if (result === undefined) return;
+      if (result && !routePassesPositionCheck(result, ac)) {
+        console.warn('[ROUTE] rejected ADSBDB route after validation', callsign, result);
+        result = null;
+      }
       if (!result) {
         result = await queryHexdb(callsign);
         if (result === undefined) return;
+        if (result && !routePassesPositionCheck(result, ac)) {
+          console.warn('[ROUTE] rejected HexDB route after validation', callsign, result);
+          result = null;
+        }
       }
 
-      routeCache[callsign] = result || null; // null = confirmed no data from either source
+      if (result) {
+        routeCache[key] = { route: result, checkedAt: now };
+        console.log('[ROUTE] refreshed', key, result);
+      } else if (cached && now - cached.checkedAt < ROUTE_MAX_STALE_MS) {
+        cached.checkedAt = now;
+        cached.refreshFailed = true;
+      } else {
+        routeCache[key] = { route: null, checkedAt: now };
+      }
     }
 
     function resolveFlightRoute(flightStr, ac) {
-      const callsign = (flightStr || '').toUpperCase().trim();
-
-      // Real route data from adsbdb/hexdb, if we resolved it for this callsign.
-      const cached = routeCache[callsign];
-      if (cached) {
-        console.log('[ROUTE] cache hit for', callsign, '-', cached);
-        return cached;
-      }
-      console.log('[ROUTE] no cache entry for', callsign, '(value:', cached, ') - falling back to heuristic guess');
-
-      // Nothing confirmed from either source - fall through to a heuristic guess.
-      // This is clearly NOT real routing data, just a plausible-looking placeholder based
-      // on callsign prefix or current heading. Callers must label this distinctly (see
-      // updateNearestScrollboard) rather than rendering it identically to a confirmed route.
-      const heading = ac.track !== undefined ? ac.track : 0;
-
-      const guess = (() => {
-        if (isMilitary(ac)) {
-          if (callsign.startsWith('RRR') || callsign.startsWith('ASCOT')) {
-            return { fromCode: 'EGVN', toCode: 'EGUN' };
-          } else if (callsign.startsWith('SHF') || callsign.startsWith('VORTEX')) {
-            return { fromCode: 'EGXC', toCode: 'EGVN' };
-          } else if (callsign.startsWith('RCH') || callsign.startsWith('REACH') || callsign.startsWith('DUKE')) {
-            return { fromCode: 'ETAR', toCode: 'EGUN' };
-          } else if (callsign.startsWith('BOOM') || callsign.startsWith('ASY')) {
-            return { fromCode: 'EGVA', toCode: 'EGVN' };
-          }
-          return { fromCode: 'EGVN', toCode: 'EGXC' };
-        }
-
-        if (callsign.startsWith('RYR')) {
-          return { fromCode: 'EGNX', toCode: 'EHAM' };
-        } else if (callsign.startsWith('EXS') || callsign.startsWith('LS')) {
-          return { fromCode: 'EGNX', toCode: 'LEMD' };
-        } else if (callsign.startsWith('EZY') || callsign.startsWith('U2')) {
-          return { fromCode: 'EGCC', toCode: 'LFPG' };
-        } else if (callsign.startsWith('BAW') || callsign.startsWith('SHT')) {
-          return { fromCode: 'EGLL', toCode: 'KJFK' };
-        } else if (callsign.startsWith('KLM')) {
-          return { fromCode: 'EHAM', toCode: 'EGBB' };
-        } else if (callsign.startsWith('DLH')) {
-          return { fromCode: 'EDDF', toCode: 'EGLL' };
-        }
-
-        if (heading >= 315 || heading < 45) {
-          return { fromCode: 'EGNX', toCode: 'EGPH' };
-        } else if (heading >= 45 && heading < 135) {
-          return { fromCode: 'EGCC', toCode: 'EHAM' };
-        } else if (heading >= 135 && heading < 225) {
-          return { fromCode: 'EGPH', toCode: 'EGLL' };
-        } else {
-          return { fromCode: 'EHAM', toCode: 'EIDW' };
-        }
-      })();
-
-      guess.source = 'estimated';
-      return guess;
+      const entry = routeCache[routeCacheKey(ac || { flight: flightStr })];
+      return entry && entry.route ? entry.route : null;
     }
 
     function announceMilitaryAircraft(ac) {
@@ -1717,17 +1575,7 @@
         boxZoom: false,
         keyboard: false,
         touchZoom: false,
-        tap: false,
-        // This map never pans/zooms interactively (all the above are disabled), so animation
-        // buys nothing here - and it actively breaks recomputeMapProjectionCache(): fitBounds()
-        // below animates the zoom/pan, but latLngToContainerPoint() (called right after) reads
-        // the CURRENT projection state, which mid-animation doesn't match where the view ends
-        // up. That mismatch is what let the rings/sweep/blips drift outside the actual 35NM
-        // circle. Disabling animation makes fitBounds() apply instantly, so the cache is always
-        // accurate the moment it's computed.
-        zoomAnimation: false,
-        fadeAnimation: false,
-        markerZoomAnimation: false
+        tap: false
       }).setView([userConfig.lat, userConfig.lon], 10);
 
       L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1744,7 +1592,7 @@
         radius: radiusMeters
       }).addTo(map);
 
-      map.fitBounds(radarCircle.getBounds(), { padding: [0, 0], animate: false });
+      map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
       recomputeMapProjectionCache();
 
       refreshWeatherOverlay();
@@ -1793,7 +1641,7 @@
           if (oldLayer) map.removeLayer(oldLayer);
         });
       } catch (err) {
-        console.log('[weather] failed to refresh radar overlay -', err);
+        console.debug('[weather] failed to refresh radar overlay -', err);
       }
     }
 
@@ -1806,7 +1654,7 @@
       
       if (map && radarCircle) {
         map.invalidateSize();
-        map.fitBounds(radarCircle.getBounds(), { padding: [0, 0], animate: false });
+        map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
       }
 
       // The map's pixel<->latlng projection just changed (container size and/or the fitBounds
@@ -1857,42 +1705,6 @@
       });
     }
 
-    // ---------------------------------------------------------------------
-    // Glider/sailplane filter: identifies non-powered aircraft so they can be dropped from
-    // liveAircraft entirely (see fetchLiveFlights) - they never appear on the scope, the
-    // sidebar, or the scrollboard. Checked two ways, since neither field is reliably present
-    // on every feed:
-    //   1. ADS-B emitter category - "B1" is the dedicated glider/sailplane code in the
-    //      standard category table (A0-A7 powered fixed-wing/rotorcraft, B0-B7 "other":
-    //      B1 glider/sailplane, B2 lighter-than-air, B3 skydiver, B4 ultralight/hang-glider/
-    //      paraglider, etc). This is the authoritative signal when present.
-    //   2. Type designator fallback - common ICAO glider type codes, for feeds/aircraft that
-    //      report a type but not a useful category (e.g. category comes back "A0"/unset).
-    // ---------------------------------------------------------------------
-    const GLIDER_TYPE_DESIGNATORS = new Set([
-      'GLID', // generic/unknown glider
-      'ASK21', 'ASK23', 'ASK13', 'ASW15', 'ASW19', 'ASW20', 'ASW27', 'ASW28',
-      'DISC', 'DIMO', // Schempp-Hirth Discus / Duo Discus
-      'LS1', 'LS3', 'LS4', 'LS6', 'LS8',
-      'PIK20', 'PK20',
-      'GROB', 'G103', 'G104', 'G109',
-      'DG100', 'DG300', 'DG800', 'DG1000',
-      'VENT', 'VENT2', // Ventus
-      'NIMB', // Nimbus
-      'JANU', // Janus
-      'PW5', 'PW6',
-      'SZD5', 'SZD9', 'SZD30', 'SZD48', 'SZD55',
-      'H101', 'H201', 'H301', 'H304', // Glasflugel Hornet/Standard Libelle etc
-      'ARCU' // Arcus
-    ]);
-
-    function isGlider(ac) {
-      const category = (ac.category || '').trim().toUpperCase();
-      if (category === 'B1') return true;
-      const type = (ac.t || '').trim().toUpperCase();
-      return GLIDER_TYPE_DESIGNATORS.has(type);
-    }
-
     async function fetchLiveFlights() {
       if (isFetching) return;
 
@@ -1924,14 +1736,8 @@
               // Some feeds inject a synthetic "ground station" placeholder - hex all zeros,
               // type "TWR" - representing the receiver's own site rather than an aircraft.
               // Drop these before anything else, or they can end up "nearest" (distance ~0)
-              // and lock the scrollboard onto a fake target. Gliders/sailplanes are dropped
-              // here too - see isGlider() above - so they never reach the scope, sidebar, or
-              // scrollboard.
-              liveAircraft = aircrafts.filter(ac =>
-                !/^0+$/.test(ac.hex || '') &&
-                (ac.t || '').toUpperCase() !== 'TWR' &&
-                !isGlider(ac)
-              );
+              // and lock the scrollboard onto a fake target.
+              liveAircraft = aircrafts.filter(ac => !/^0+$/.test(ac.hex || '') && (ac.t || '').toUpperCase() !== 'TWR');
 
               // Keep the injected test-squawk aircraft (see triggerTestSquawk) alive across
               // polls until it expires, so a real fetch cycle doesn't wipe it out mid-test.
@@ -2002,18 +1808,6 @@
         renderFlightBoard(liveAircraft);
         updateNearestScrollboard(liveAircraft);
       }
-    }
-
-    // Ticks the Flight Time field forward once a second so it counts up smoothly rather than
-    // only advancing every 12s when a new poll lands. Purely cosmetic - updateNearestScrollboard
-    // already sets the authoritative value on each poll/lock change - and reads the same
-    // aircraftFirstSeenAt bookkeeping.
-    function tickFlightTimeDisplay() {
-      if (!lockedAircraft) return;
-      const el = document.getElementById('sb-flight-time');
-      if (!el) return;
-      const firstSeenAt = aircraftFirstSeenAt[lockedAircraft.hex];
-      el.innerText = `Flight Time: ${firstSeenAt ? formatDuration(Date.now() - firstSeenAt) : '--'}`;
     }
 
     function isMilitary(ac) {
@@ -2177,10 +1971,6 @@
         logo: { text: 'POLICE', bg: '#ffffff', textColor: '#0a3fd9' },
         route: { from: 'Fighting crime', to: 'Finding criminals' }
       },
-      'G-POLW': {
-        logo: { text: 'POLICE', bg: '#ffffff', textColor: '#0a3fd9' },
-        route: { from: 'East Midlands Airport, UK', to: 'The criminals' }
-      },
       'UFO1': {
         logo: { text: 'UFO', bg: '#000000', textColor: '#00ff66' }
       }
@@ -2290,15 +2080,6 @@
       document.getElementById('sb-alt').innerText = `Alt: ${lockedAircraft.alt_baro || 'Ground'} ft`;
       document.getElementById('sb-speed').innerText = `Spd: ${speedKts} kts (${speedMph} mph)`;
 
-      // Time tracked this session, not a real off-block/departure timestamp - ADS-B doesn't
-      // give us one (see aircraftFirstSeenAt). Ticks forward every second between polls too -
-      // see tickFlightTimeDisplay().
-      const firstSeenAt = aircraftFirstSeenAt[lockedAircraft.hex];
-      if (!firstSeenAt) {
-        console.log('[FLIGHT TIME] no firstSeenAt entry for hex', lockedAircraft.hex, '- known hexes:', Object.keys(aircraftFirstSeenAt));
-      }
-      document.getElementById('sb-flight-time').innerText = `Flight Time: ${firstSeenAt ? formatDuration(Date.now() - firstSeenAt) : '--'}`;
-
       const airlineEl = document.getElementById('sb-airline');
       const planeLabel = lockedAircraft.flight ? lockedAircraft.flight.trim() : lockedAircraft.hex;
       if (isQraLock) {
@@ -2344,42 +2125,31 @@
         document.getElementById('sb-from').innerHTML = `<b>${routeOverride.route.from}</b>`;
         document.getElementById('sb-to').innerHTML = `<b>${routeOverride.route.to}</b>`;
         tagEl.style.display = 'none';
-        // No real coordinates behind a fixed flavour-text route, so there's nothing to
-        // compute an ETA from.
-        document.getElementById('sb-eta').innerText = 'ETA: --';
       } else {
-        // Route: real data (adsbdb/hexdb) is shown in the normal green; when nothing real was
-        // found and we fall back to the heuristic guess, the container is flagged as
-        // "estimated" (dimmer amber text + a tag) so it's never visually indistinguishable
-        // from a confirmed route.
+        // Only display routes returned by an API and accepted by validation. Never invent a
+        // destination from callsign prefixes or heading.
         const route = resolveFlightRoute(flightStr, lockedAircraft);
-        const isEstimated = route.source === 'estimated';
-        console.log('[ROUTE] tag decision -', { callsign: flightStr, source: route.source, isEstimated, tagWillShow: isEstimated ? 'EST' : (route.source === 'hexdb' ? 'HEXDB' : 'CONFIRMED') });
+        routeContainer.classList.remove('route-estimated');
 
-        routeContainer.classList.toggle('route-estimated', isEstimated);
-
-        document.getElementById('sb-from').innerHTML =
-          `<b>${route.fromCode}</b> — <span style="color:var(--text-dim);">${route.fromName || airportName(route.fromCode) || 'Aerodrome'}</span>`;
-        document.getElementById('sb-to').innerHTML =
-          `<b>${route.toCode}</b> — <span style="color:var(--text-dim);">${route.toName || airportName(route.toCode) || 'Aerodrome'}</span>`;
-
-        tagEl.style.display = 'inline-block';
-        if (isEstimated) {
+        if (!route) {
+          document.getElementById('sb-from').innerHTML = '<b>UNKNOWN</b> — <span style="color:var(--text-dim);">No verified route</span>';
+          document.getElementById('sb-to').innerHTML = '<b>UNKNOWN</b> — <span style="color:var(--text-dim);">No verified destination</span>';
+          tagEl.style.display = 'inline-block';
           tagEl.className = 'route-source-tag estimated';
-          tagEl.innerText = 'EST';
-          tagEl.title = 'No confirmed route data - estimated from callsign/heading';
+          tagEl.innerText = 'NO DATA';
+          tagEl.title = 'No route from the available route APIs';
+          document.getElementById('sb-eta').innerText = 'ETA: --';
         } else {
+          document.getElementById('sb-from').innerHTML =
+            `<b>${route.fromCode}</b> — <span style="color:var(--text-dim);">${route.fromName || airportName(route.fromCode) || 'Aerodrome'}</span>`;
+          document.getElementById('sb-to').innerHTML =
+            `<b>${route.toCode}</b> — <span style="color:var(--text-dim);">${route.toName || airportName(route.toCode) || 'Aerodrome'}</span>`;
+          tagEl.style.display = 'inline-block';
           tagEl.className = 'route-source-tag confirmed';
           tagEl.innerText = route.source === 'hexdb' ? 'HEXDB' : 'CONFIRMED';
-          tagEl.title = `Route data from ${route.source}`;
-        }
-
-        // Straight-line ETA from current position/speed to the destination - see
-        // computeEtaText() for what it does and doesn't account for. Falls back to '--' when
-        // we don't have real destination coordinates (most hexdb/estimated routes) or a
-        // usable ground speed.
-        document.getElementById('sb-eta').innerText = `ETA: ${computeEtaText(lockedAircraft, route)}`;
-      }
+          tagEl.title = `Verified route data from ${route.source}`;
+          document.getElementById('sb-eta').innerText = `ETA: ${computeEtaText(lockedAircraft, route)}`;
+        }      }
     }
 
     let sweepAngle = 0;
@@ -2391,6 +2161,11 @@
     // elapsed wall-clock time instead (see drawRadarScope) keeps the sweep's real-world speed
     // constant no matter how many frames the device manages to render.
     const SWEEP_RATE_RAD_PER_SEC = 0.9;
+    // One full sweep rotation (2π at the rate above, ~7s) - fade every non-locked blip out
+    // over roughly that long, down to a dim floor rather than to nothing, so the scope still
+    // reads at a glance between sweep passes.
+    const SWEEP_FADE_MS = 7000;
+    const SWEEP_FADE_MIN_ALPHA = 0.35;
 
     // Soft render-rate cap: redrawing the full canvas (rings, sweep, every aircraft
     // silhouette + label) at an uncapped 60fps is more work than a Raspberry Pi's GPU/canvas
@@ -2525,7 +2300,22 @@
           const isQra = ac.squawk === QRA_SQUAWK;
           const isLocked = lockedAircraft && lockedAircraft.hex === ac.hex;
 
+          // CRT-style sweep fade: everything except the locked aircraft brightens when the
+          // sweep beam passes its bearing, then dims until the next pass comes back around
+          // (one full rotation later) rather than staying uniformly lit the whole time.
+          const blipAngle = Math.atan2(pt.y - centerPt.y, pt.x - centerPt.x);
+          const angDiff = Math.abs(((sweepAngle - blipAngle + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI);
+          if (ac.hex && angDiff < 0.02) aircraftLastSweepHit[ac.hex] = Date.now();
+          let fadeAlpha = 1;
+          if (!isLocked && ac.hex) {
+            if (aircraftLastSweepHit[ac.hex] === undefined) aircraftLastSweepHit[ac.hex] = Date.now();
+            const elapsed = Date.now() - aircraftLastSweepHit[ac.hex];
+            const t = Math.min(1, elapsed / SWEEP_FADE_MS);
+            fadeAlpha = 1 - t * (1 - SWEEP_FADE_MIN_ALPHA);
+          }
+
           ctx.save();
+          ctx.globalAlpha = fadeAlpha;
 
           if (isLocked) {
             const pulseRadius = 12 + Math.sin(Date.now() / 150) * 3;
@@ -2558,12 +2348,16 @@
           // altitudeColor() and ALTITUDE_BANDS above.
           const silColor = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : altitudeColor(ac.alt_baro));
 
-          // Live pw-silhouettes lookup - specific type designator first, falling back to the
+          // Silhouette is always drawn at full brightness - only the label fades with the
+          // sweep, so the aircraft shape itself stays clearly visible between sweep passes.
+          ctx.globalAlpha = 1;
+
+          // Local spritesheet lookup - specific type designator first, falling back to the
           // aircraft's ADS-B category's generic silhouette. Draws nothing (beyond the label)
-          // if neither is covered, or while the lookup is still in flight - see
-          // drawPwSilhouette/resolvePwLookupKey above.
+          // if neither is covered - see drawPwSilhouette/resolvePwSpriteKey above.
           drawPwSilhouette(ctx, ac, pt, heading, silColor);
 
+          ctx.globalAlpha = fadeAlpha;
           ctx.font = 'bold 9px system-ui';
           const label = ac.flight ? ac.flight.trim() : ac.hex;
           const altText = ac.alt_baro ? ` FL${Math.round(ac.alt_baro / 100)}` : '';
@@ -2600,10 +2394,10 @@
           ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
           ctx.fillRect(labelBoxX, labelBoxY, labelBoxW, labelBoxH);
 
-          ctx.fillStyle = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : '#7B3F00');
+          ctx.fillStyle = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : '#b266ff');
           ctx.fillText(labelText, labelBoxX + labelPadX, labelBoxY + labelBoxH - labelPadY - 2);
 
-          ctx.restore();
+          ctx.restore(); // matches the fadeAlpha save() above
         });
       }
     }
