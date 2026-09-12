@@ -583,7 +583,7 @@
     let pollBackoffUntil = 0;
     let consecutive429s = 0;
     let aircraftPollTimer = null;
-    const AIRCRAFT_POLL_MS = 1000;
+    const AIRCRAFT_POLL_MS = 2500;
     const AIRCRAFT_STALE_GRACE_MS = 5000;
     const aircraftTrails = {};
     // hex -> Date.now() of the last time the sweep beam passed this aircraft's bearing (CRT-style
@@ -1802,8 +1802,19 @@
 
       // airplanes.live's public /v2/point/ endpoint now requires a feeder-linked API key
       // (returns 403 for unauthenticated requests) - dropped as a fallback.
+      //
+      // api.adsb.lol does not send Access-Control-Allow-Origin for browser requests from
+      // arbitrary origins, so a static page (this one, on GitHub Pages) can never read the
+      // response directly - no client-side header or fetch option can add a header the
+      // server itself doesn't send. Routing through a public CORS proxy that fetches the
+      // URL server-side and re-adds the header. This proxy is a free third-party service
+      // with no uptime guarantee - if it goes down, swap CORS_PROXY for another one (e.g.
+      // 'https://api.allorigins.win/raw?url=') or stand up a dedicated proxy (a small
+      // Cloudflare Worker is the reliable long-term fix).
+      const CORS_PROXY = 'https://corsproxy.io/?url=';
+      const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
       const endpoints = [
-        `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`
+        CORS_PROXY + encodeURIComponent(adsbUrl)
       ];
       let success = false;
       let sawRateLimit = false;
@@ -1881,7 +1892,12 @@
               }
             }
           } catch (err) {
-            // Network errors are handled below; keep the last good aircraft state visible.
+            // A request blocked by the browser (e.g. adsb.lol omits CORS headers on its
+            // 429 responses, so a rate-limited request surfaces here as a generic "Failed
+            // to fetch" TypeError rather than a readable 429 status) looks identical to a
+            // genuine network error from here. Treat it the same as a rate limit so we
+            // back off instead of retrying every second and making the rate limiting worse.
+            sawRateLimit = true;
           }
         }
 
