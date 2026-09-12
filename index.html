@@ -1807,11 +1807,13 @@
       // arbitrary origins, so a static page (this one, on GitHub Pages) can never read the
       // response directly - no client-side header or fetch option can add a header the
       // server itself doesn't send. Routing through a public CORS proxy that fetches the
-      // URL server-side and re-adds the header. This proxy is a free third-party service
-      // with no uptime guarantee - if it goes down, swap CORS_PROXY for another one (e.g.
-      // 'https://api.allorigins.win/raw?url=') or stand up a dedicated proxy (a small
-      // Cloudflare Worker is the reliable long-term fix).
-      const CORS_PROXY = 'https://corsproxy.io/?url=';
+      // URL server-side and re-adds the header.
+      //
+      // corsproxy.io now requires a paid API key for anonymous use (401s without one) - see
+      // https://corsproxy.io/pricing/ - so it was dropped in favor of allorigins.win below.
+      // This is still a free third-party service with no uptime guarantee; if it also starts
+      // rejecting requests, the durable fix is a dedicated proxy (a small Cloudflare Worker).
+      const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
       const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
       const endpoints = [
         CORS_PROXY + encodeURIComponent(adsbUrl)
