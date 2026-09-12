@@ -691,7 +691,7 @@
             jsonPaths.add(entry.path);
           }
         });
-        console.debug(`[pw-silhouettes] repo tree loaded (${svgByName.size} svg files, ${jsonPaths.size} json files)`);
+        console.log(`[pw-silhouettes] repo tree loaded (${svgByName.size} svg files, ${jsonPaths.size} json files)`);
         return { svgByName, jsonPaths };
       })().catch(err => {
         console.warn('[pw-silhouettes] failed to load repo file tree -', err);
@@ -749,7 +749,7 @@
           if (svgByName.has(refBase)) return `${PW_RAW_BASE}/${svgByName.get(refBase)}`;
           return `${PW_RAW_BASE}/${ref.replace(/^\/+/, '')}`;
         } catch (err) {
-          console.debug(`[pw-silhouettes] metadata lookup failed for ${candidate} -`, err);
+          console.log(`[pw-silhouettes] metadata lookup failed for ${candidate} -`, err);
         }
       }
       return null;
@@ -809,7 +809,7 @@
         URL.revokeObjectURL(blobUrl);
         pwSilhouetteCache.set(cacheKey, image);
       } catch (err) {
-        console.debug(`[pw-silhouettes] failed to load silhouette for ${key} -`, err);
+        console.log(`[pw-silhouettes] failed to load silhouette for ${key} -`, err);
         pwSilhouetteCache.set(cacheKey, null);
       }
     }
@@ -910,6 +910,7 @@
       applyNightMode();
       setInterval(applyNightMode, 60000);
       setInterval(cycleBurnInShift, BURN_IN_SHIFT_INTERVAL_MS);
+      setInterval(tickFlightTimeDisplay, 1000);
 
       requestAnimationFrame(drawRadarScope);
       fetchLiveFlights();
@@ -1160,6 +1161,52 @@
       }
       const entry = airportDatabase[(route.toCode || '').toUpperCase()];
       return entry ? { lat: entry.lat, lon: entry.lon } : null;
+    }
+
+    // Formats a millisecond duration as "Xh YYm" (>=1h) or "Ym Ss" (<1h), used for the
+    // scrollboard's Flight Time field.
+    function formatDuration(ms) {
+      const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+      return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+    }
+
+    // Rough ETA for the scrollboard: straight-line (great-circle) distance from the
+    // aircraft's current position to its destination, divided by current ground speed -
+    // no account for remaining climb/descent, routing, or wind, so treat this as a ballpark
+    // rather than a precise arrival time. Returns '--' when we don't have real destination
+    // coordinates (e.g. a registration-override flavour route, or a heuristic guess whose
+    // airport code isn't in our small local table) or a usable ground speed.
+    function computeEtaText(ac, route) {
+      if (!route) { console.log('[ETA] no route object at all for', ac.flight || ac.hex); return '--'; }
+      const destCoords = getDestinationCoords(route);
+      const speedKts = ac.gs;
+      if (!destCoords || !speedKts || speedKts <= 0) {
+        console.log('[ETA] blocked -', {
+          callsign: ac.flight || ac.hex,
+          routeSource: route.source,
+          toCode: route.toCode,
+          toLat: route.toLat,
+          toLon: route.toLon,
+          destCoordsResolved: !!destCoords,
+          gs: ac.gs
+        });
+        return '--';
+      }
+      const distNM = calcDistanceNM(ac.lat, ac.lon, destCoords.lat, destCoords.lon);
+      const hoursRemaining = distNM / speedKts;
+      if (!isFinite(hoursRemaining) || hoursRemaining <= 0) return '--';
+
+      const etaDate = new Date(Date.now() + hoursRemaining * 3600 * 1000);
+      const clock = etaDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const remainingMin = Math.round(hoursRemaining * 60);
+      const remainingText = remainingMin >= 60
+        ? `${Math.floor(remainingMin / 60)}h ${remainingMin % 60}m`
+        : `${remainingMin}m`;
+      return `${clock} (${remainingText})`;
     }
 
 
@@ -1753,7 +1800,7 @@
           if (oldLayer) map.removeLayer(oldLayer);
         });
       } catch (err) {
-        console.debug('[weather] failed to refresh radar overlay -', err);
+        console.log('[weather] failed to refresh radar overlay -', err);
       }
     }
 
@@ -1964,6 +2011,18 @@
       }
     }
 
+    // Ticks the Flight Time field forward once a second so it counts up smoothly rather than
+    // only advancing every 12s when a new poll lands. Purely cosmetic - updateNearestScrollboard
+    // already sets the authoritative value on each poll/lock change - and reads the same
+    // aircraftFirstSeenAt bookkeeping.
+    function tickFlightTimeDisplay() {
+      if (!lockedAircraft) return;
+      const el = document.getElementById('sb-flight-time');
+      if (!el) return;
+      const firstSeenAt = aircraftFirstSeenAt[lockedAircraft.hex];
+      el.innerText = `Flight Time: ${firstSeenAt ? formatDuration(Date.now() - firstSeenAt) : '--'}`;
+    }
+
     function isMilitary(ac) {
       const type = (ac.t || '').toUpperCase();
       const flight = (ac.flight || '').toUpperCase();
@@ -2127,7 +2186,7 @@
       },
       'G-POLW': {
         logo: { text: 'POLICE', bg: '#ffffff', textColor: '#0a3fd9' },
-        route: { from: 'East Midlands Airport, UK', to: 'The Criminals' }
+        route: { from: 'East Midlands Airport, UK', to: 'The criminals' }
       },
       'UFO1': {
         logo: { text: 'UFO', bg: '#000000', textColor: '#00ff66' }
@@ -2238,6 +2297,15 @@
       document.getElementById('sb-alt').innerText = `Alt: ${lockedAircraft.alt_baro || 'Ground'} ft`;
       document.getElementById('sb-speed').innerText = `Spd: ${speedKts} kts (${speedMph} mph)`;
 
+      // Time tracked this session, not a real off-block/departure timestamp - ADS-B doesn't
+      // give us one (see aircraftFirstSeenAt). Ticks forward every second between polls too -
+      // see tickFlightTimeDisplay().
+      const firstSeenAt = aircraftFirstSeenAt[lockedAircraft.hex];
+      if (!firstSeenAt) {
+        console.log('[FLIGHT TIME] no firstSeenAt entry for hex', lockedAircraft.hex, '- known hexes:', Object.keys(aircraftFirstSeenAt));
+      }
+      document.getElementById('sb-flight-time').innerText = `Flight Time: ${firstSeenAt ? formatDuration(Date.now() - firstSeenAt) : '--'}`;
+
       const airlineEl = document.getElementById('sb-airline');
       const planeLabel = lockedAircraft.flight ? lockedAircraft.flight.trim() : lockedAircraft.hex;
       if (isQraLock) {
@@ -2283,6 +2351,9 @@
         document.getElementById('sb-from').innerHTML = `<b>${routeOverride.route.from}</b>`;
         document.getElementById('sb-to').innerHTML = `<b>${routeOverride.route.to}</b>`;
         tagEl.style.display = 'none';
+        // No real coordinates behind a fixed flavour-text route, so there's nothing to
+        // compute an ETA from.
+        document.getElementById('sb-eta').innerText = 'ETA: --';
       } else {
         // Route: real data (adsbdb/hexdb) is shown in the normal green; when nothing real was
         // found and we fall back to the heuristic guess, the container is flagged as
@@ -2308,6 +2379,12 @@
           tagEl.innerText = route.source === 'hexdb' ? 'HEXDB' : 'CONFIRMED';
           tagEl.title = `Route data from ${route.source}`;
         }
+
+        // Straight-line ETA from current position/speed to the destination - see
+        // computeEtaText() for what it does and doesn't account for. Falls back to '--' when
+        // we don't have real destination coordinates (most hexdb/estimated routes) or a
+        // usable ground speed.
+        document.getElementById('sb-eta').innerText = `ETA: ${computeEtaText(lockedAircraft, route)}`;
       }
     }
 
