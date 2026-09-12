@@ -1806,17 +1806,22 @@
       // api.adsb.lol does not send Access-Control-Allow-Origin for browser requests from
       // arbitrary origins, so a static page (this one, on GitHub Pages) can never read the
       // response directly - no client-side header or fetch option can add a header the
-      // server itself doesn't send. Routing through a public CORS proxy that fetches the
-      // URL server-side and re-adds the header.
+      // server itself doesn't send.
       //
-      // corsproxy.io now requires a paid API key for anonymous use (401s without one) - see
-      // https://corsproxy.io/pricing/ - so it was dropped in favor of allorigins.win below.
-      // This is still a free third-party service with no uptime guarantee; if it also starts
-      // rejecting requests, the durable fix is a dedicated proxy (a small Cloudflare Worker).
-      const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+      // WORKER_URL is a dedicated Cloudflare Worker (see worker/index.js) that forwards
+      // this request to adsb.lol and adds the header back - this is the reliable, owned
+      // fix. Fill it in with your deployed *.workers.dev URL once it's up.
+      //
+      // Until then (or if the Worker ever goes down), allorigins.win is kept as a free
+      // third-party fallback proxy - no uptime guarantee, so it's listed second rather
+      // than relied on alone. (corsproxy.io was tried first but now requires a paid API
+      // key for anonymous use and started returning 401s.)
+      const WORKER_URL = ''; // e.g. 'https://radar-proxy.your-subdomain.workers.dev'
+      const FALLBACK_PROXY = 'https://api.allorigins.win/raw?url=';
       const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
       const endpoints = [
-        CORS_PROXY + encodeURIComponent(adsbUrl)
+        ...(WORKER_URL ? [`${WORKER_URL}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`] : []),
+        FALLBACK_PROXY + encodeURIComponent(adsbUrl)
       ];
       let success = false;
       let sawRateLimit = false;
