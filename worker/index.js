@@ -31,6 +31,12 @@ const UPSTREAM = 'https://opendata.adsb.fi';
 // matters more than it did against adsb.lol. A couple of seconds keeps
 // multiple tabs/viewers off adsb.fi's own rate limit.
 const CACHE_SECONDS = 2;
+// If adsb.fi itself is erroring/rate-limiting (a temporary IP restriction),
+// cache that failure too, briefly - otherwise every poll from every client
+// (multiple tabs, phone + desktop) immediately retries adsb.fi and counts as
+// another failed request against the same restriction, extending it instead
+// of letting it clear. Longer than CACHE_SECONDS on purpose.
+const ERROR_CACHE_SECONDS = 8;
 
 function corsHeaders(origin) {
   return {
@@ -79,12 +85,15 @@ export default {
 
     const response = new Response(upstreamResponse.body, upstreamResponse);
     Object.entries(corsHeaders(allowOrigin)).forEach(([k, v]) => response.headers.set(k, v));
-    response.headers.set('Cache-Control', `public, max-age=${CACHE_SECONDS}`);
 
-    if (upstreamResponse.ok) {
-      // Clone before caching - a Response body can only be read once.
-      await cache.put(cacheKey, response.clone());
-    }
+    // Cache successes briefly to spread load across pollers; cache failures
+    // (403/429/etc) for longer, so a rate-limit or temporary restriction gets
+    // a chance to clear instead of being continuously re-triggered by every
+    // client's next poll.
+    const ttl = upstreamResponse.ok ? CACHE_SECONDS : ERROR_CACHE_SECONDS;
+    response.headers.set('Cache-Control', `public, max-age=${ttl}`);
+    // Clone before caching - a Response body can only be read once.
+    await cache.put(cacheKey, response.clone());
 
     return response;
   },
