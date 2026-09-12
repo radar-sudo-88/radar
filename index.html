@@ -2011,7 +2011,7 @@
       // third-party fallback proxy - no uptime guarantee, so it's listed second rather
       // than relied on alone. (corsproxy.io was tried first but now requires a paid API
       // key for anonymous use and started returning 401s.)
-      const WORKER_URL = 'https://cors-proxy.xjlees2.workers.dev'; // e.g. 'https://radar-proxy.your-subdomain.workers.dev'
+      const WORKER_URL = 'https://cors-proxy-radar.wisp.uno'; // Node.js proxy hosted on Wispbyte (see server.js)
       const FALLBACK_PROXY = 'https://api.allorigins.win/raw?url=';
       const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
       const endpoints = [
