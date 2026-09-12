@@ -1,9 +1,21 @@
-// Cloudflare Worker: adsb.lol CORS proxy for radar-sudo-88.github.io
+// Cloudflare Worker: ADS-B CORS proxy for radar-sudo-88.github.io
 //
-// api.adsb.lol does not send Access-Control-Allow-Origin for browser requests,
-// so this radar page (a static GitHub Pages site) can't read its responses
-// directly. This worker forwards the one request shape the page needs to
-// adsb.lol and adds the header back on the way out.
+// Neither adsb.lol nor adsb.fi sends Access-Control-Allow-Origin for browser
+// requests, so this radar page (a static GitHub Pages site) can't read their
+// responses directly. This worker forwards the request server-side and adds
+// the header back on the way out.
+//
+// Upstream is adsb.fi, not adsb.lol: adsb.lol actively 403s requests from
+// datacenter/cloud IP ranges (which is what a Worker's outbound fetch looks
+// like to it), while adsb.fi serves them fine - see
+// https://github.com/adsbfi/opendata. adsb.fi's endpoint shape differs
+// (v3/lat/:lat/lon/:lon/dist/:radius, not v2/point/:lat/:lon/:radius), so
+// that's translated below - the public-facing path this worker accepts
+// (and what index.html requests) is unchanged.
+//
+// adsb.fi's terms (see the README above) restrict their open data to
+// personal, non-commercial use and ask for attribution + a link to
+// https://adsb.fi on any site that uses it.
 //
 // Deploy (no CLI/Mac needed):
 //   1. https://dash.cloudflare.com -> Workers & Pages -> Create -> Create Worker
@@ -13,10 +25,11 @@
 //   5. Paste it into WORKER_URL near the top of index.html's fetchLiveFlights()
 
 const ALLOWED_ORIGIN = 'https://radar-sudo-88.github.io';
-const UPSTREAM = 'https://api.adsb.lol';
-// Cache each unique point query for a couple of seconds at the edge, so
-// multiple tabs/viewers polling the same location don't each cost a fresh
-// hit against adsb.lol's rate limit.
+const UPSTREAM = 'https://opendata.adsb.fi';
+// adsb.fi rate-limits public endpoints to 1 request/second per IP, and counts
+// 400/401/403/404/429 responses toward that limit too - so caching here
+// matters more than it did against adsb.lol. A couple of seconds keeps
+// multiple tabs/viewers off adsb.fi's own rate limit.
 const CACHE_SECONDS = 2;
 
 function corsHeaders(origin) {
@@ -58,7 +71,7 @@ export default {
       return response;
     }
 
-    const upstreamUrl = `${UPSTREAM}/v2/point/${match[1]}/${match[2]}/${match[3]}`;
+    const upstreamUrl = `${UPSTREAM}/api/v3/lat/${match[1]}/lon/${match[2]}/dist/${match[3]}`;
     const upstreamResponse = await fetch(upstreamUrl, {
       headers: { Accept: 'application/json' },
       cf: { cacheTtl: CACHE_SECONDS, cacheEverything: true },
