@@ -1,0 +1,2826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live ADSB Airspace Scope (Retro Radar Wall Board)</title>
+  
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    :root {
+      --bg-color: #030704;
+      --card-bg: rgba(5, 15, 9, 0.95);
+      --card-border: #0f381f;
+      --text-main: #00ff66;
+      --text-dim: #2b7a4b;
+      --accent-green: #00ff66;
+      --accent-blue: #00bfff;
+      --accent-military: #ffb000;
+      --accent-red: #ff3333;
+      --accent-amber-dim: #7a5a00;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: system-ui, -apple-system, sans-serif;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      touch-action: none;
+    }
+
+    /* Automatic night mode - see applyNightMode(). A plain brightness/saturation dim rather
+       than touching individual colours, so it works uniformly across the scope, sidebar and
+       scrollboard without having to special-case every element. */
+    body.night-mode {
+      filter: brightness(0.55) saturate(0.8);
+      transition: filter 3s ease;
+    }
+
+    /* Red Pulsing Screen Overlay */
+    #screen-pulse-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 9999;
+      pointer-events: none;
+      background: rgba(255, 0, 0, 0);
+      transition: background 0.3s ease;
+    }
+
+    .screen-pulse-active {
+      animation: redPulse 1.5s ease-in-out 3;
+    }
+
+    @keyframes redPulse {
+      0% { background: rgba(255, 0, 0, 0); box-shadow: inset 0 0 0px rgba(255,0,0,0); }
+      50% { background: rgba(255, 0, 0, 0.22); box-shadow: inset 0 0 120px rgba(255,0,0,0.5); }
+      100% { background: rgba(255, 0, 0, 0); box-shadow: inset 0 0 0px rgba(255,0,0,0); }
+    }
+
+    /* Tap-to-start overlay (needed to satisfy browser autoplay/audio-gesture requirements) */
+    #start-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(1, 5, 2, 0.97);
+      z-index: 10000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      cursor: pointer;
+      user-select: none;
+    }
+    #start-overlay.hidden { display: none; }
+    #start-overlay .start-title {
+      font-size: 1.1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent-green);
+      text-shadow: 0 0 10px rgba(0,255,102,0.5);
+    }
+    #start-overlay .start-sub {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+    #start-overlay .pulse-dot {
+      width: 10px; height: 10px;
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background-color: var(--accent-green);
+      border-radius: 50%;
+      box-shadow: 0 0 10px var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 15px var(--accent-green); }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+
+    main {
+      flex: 1;
+      padding: 0.3rem;
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 0.3rem;
+      width: 100%;
+      min-height: 0;
+    }
+
+    /* Wraps <main> + <footer> so the whole visible UI (not the fixed full-screen overlays,
+       which are siblings of this) can be nudged a couple of px every so often - see
+       cycleBurnInShift() - without disturbing anything else. Same flex layout body gave
+       these two directly before this wrapper existed. */
+    #burn-in-shield {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      transition: transform 8s linear;
+    }
+
+    .radar-wrapper {
+      position: relative;
+      background: #010502;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      overflow: hidden;
+      height: 100%;
+      width: 100%;
+      touch-action: none;
+      box-shadow: inset 0 0 30px rgba(0, 255, 102, 0.15);
+    }
+
+    #map {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      filter: brightness(1.15) contrast(1.05) saturate(1.1);
+      opacity: 0.7;
+      pointer-events: none;
+      transition: clip-path 0.2s ease-out;
+    }
+
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      z-index: 10;
+      min-height: 0;
+    }
+
+    /* Altitude colour-key, bottom-left corner of the scope */
+    #altitude-legend {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      z-index: 3;
+      background: rgba(2, 8, 4, 0.65);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 0.6rem;
+      line-height: 1.5;
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+    .legend-row { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .legend-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+
+    .panel {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      box-shadow: 0 0 15px rgba(0, 0, 0, 0.8);
+    }
+
+    .panel-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--accent-military);
+      margin-bottom: 0.35rem;
+      letter-spacing: 0.05em;
+      text-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
+    }
+
+    .aircraft-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 2px;
+      min-height: 0;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    .aircraft-grid::-webkit-scrollbar {
+      display: none;
+    }
+
+    .ac-card {
+      background: rgba(10, 30, 18, 0.8);
+      border: 1px solid var(--card-border);
+      padding: 0.35rem 0.45rem;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+
+    .ac-thumb {
+      width: 90px;
+      height: 58px;
+      background: rgba(2, 8, 4, 0.95);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .ac-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    footer {
+      height: 110px;
+      background: rgba(2, 10, 5, 0.98);
+      border-top: 1px solid var(--card-border);
+      padding: 0.3rem 0.4rem;
+      display: flex;
+      align-items: center;
+      z-index: 1000;
+      flex-shrink: 0;
+    }
+
+    .scrollboard {
+      width: 100%;
+      height: 100%;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+      box-shadow: 0 0 15px rgba(0, 0, 0, 0.8);
+    }
+
+    /* Sized by its own content: with a real photo, width follows the image's natural aspect
+       ratio scaled to the full footer height (see .logo-container img) - "full size", not
+       cropped to a fixed box like the old 105px column. min-width keeps it from collapsing
+       to nothing in the text-fallback (no photo) state; max-width stops an unusually wide/
+       panoramic photo from swallowing the metric columns next to it. The banner-col flex
+       items (flex: 1 1 0, below) reflow to fill whatever space is left over automatically. */
+    .logo-container {
+      flex: 0 1 auto;
+      height: 100%;
+      min-width: 110px;
+      max-width: 62%;
+      background: rgba(2, 8, 4, 0.95);
+      border-right: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .logo-container img {
+      height: 100%;
+      width: auto;
+      max-width: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    /* Container holding the airline logo badge + aircraft photo side by side inside
+       .logo-container. Replaces the old single-image layout so both can show at once. */
+    .photo-row {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      width: 100%;
+    }
+
+    .airline-logo-thumb {
+      flex: 0 0 auto;
+      height: 65%;
+      max-width: 42%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 0.4rem;
+      border-right: 1px solid rgba(15, 56, 31, 0.6);
+    }
+
+    .airline-logo-thumb img {
+      max-height: 100%;
+      max-width: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .aircraft-photo-thumb {
+      flex: 1 1 auto;
+      height: 100%;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 0 0.3rem;
+    }
+
+    .aircraft-photo-thumb img {
+      height: 100%;
+      width: auto;
+      max-width: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .logo-fallback {
+      font-size: 0.65rem;
+      font-weight: bold;
+      color: var(--accent-green);
+      text-align: center;
+      text-transform: uppercase;
+      padding: 4px;
+      text-shadow: 0 0 6px rgba(0, 255, 102, 0.5);
+    }
+
+    .banner-col {
+      flex: 1 1 0;
+      min-width: 0;
+      padding: 0.3rem 0.5rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      height: 100%;
+      border-right: 1px solid rgba(15, 56, 31, 0.6);
+    }
+
+    /* The flight-info column's content (callsign, type, from/to) rarely needs a full equal
+       third of the bar - giving it flex:1 1 0 like the metric columns left a dead gap between
+       the text and the next box's border. Let it size to its own content instead (within
+       sensible bounds) so the metric-group boxes shift left and sit right up against it. */
+    .banner-col-info {
+      flex: 0 1 auto;
+      min-width: 260px;
+      max-width: 50%;
+    }
+
+    .banner-col:last-child {
+      border-right: none;
+    }
+
+    /* Invisible on desktop - see the HTML comment above .scrollboard-metrics for why this
+       wrapper exists at all. */
+    .scrollboard-metrics {
+      display: contents;
+    }
+
+    .airline-heading {
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: var(--accent-green);
+      letter-spacing: 0.02em;
+      line-height: 1.1;
+      margin-bottom: 0.05rem;
+      text-shadow: 0 0 8px rgba(0, 255, 102, 0.4);
+    }
+
+    .aircraft-meta {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-weight: 500;
+      margin-bottom: 0.1rem;
+    }
+
+    .route-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.02rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+
+    .route-row {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .route-label {
+      color: var(--text-dim);
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      width: 26px;
+      flex-shrink: 0;
+    }
+
+    .route-estimated .route-row span:not(.route-label) {
+      color: var(--accent-amber-dim) !important;
+    }
+
+    .route-source-tag {
+      font-size: 0.55rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.03rem 0.3rem;
+      border-radius: 3px;
+      margin-left: 0.3rem;
+    }
+
+    .route-source-tag.confirmed {
+      color: var(--accent-green);
+      border: 1px solid var(--accent-green);
+    }
+
+    .route-source-tag.estimated {
+      color: var(--accent-military);
+      border: 1px solid var(--accent-amber-dim);
+    }
+
+    .metric-group {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.02rem;
+    }
+
+    .primary-metric {
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: var(--accent-green);
+      line-height: 1.1;
+      text-shadow: 0 0 8px rgba(0, 255, 102, 0.5);
+    }
+
+    .secondary-metric {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .sub-title {
+      font-size: 0.6rem;
+      font-weight: 700;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* ===================================================================
+       Mobile layout
+       ===================================================================
+       Desktop is a fixed 2-column grid (radar + a 340px sidebar) with a
+       wide horizontal scrollboard footer - all of which is too cramped to
+       read on a phone. Below ~700px wide in portrait, this switches to:
+         - radar on top, full width
+         - the military-transponder list as a horizontal scroll strip
+           instead of competing with the radar for vertical space
+         - the scrollboard reflowed into 2 rows (photo+flight info, then
+           the three metric groups) instead of one squeezed-together row
+       A short/landscape phone gets a lighter touch below - the side-by-side
+       layout already suits a wide-but-short screen, it just needs a
+       narrower sidebar and smaller text to fit.
+    */
+    @media (max-width: 700px) and (orientation: portrait) {
+      main {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr) 96px;
+        padding: 0.25rem;
+        gap: 0.25rem;
+      }
+
+      .sidebar {
+        height: 96px;
+      }
+
+      .panel {
+        padding: 0.35rem 0.4rem;
+      }
+
+      .panel-title {
+        font-size: 0.6rem;
+        margin-bottom: 0.25rem;
+      }
+
+      /* Vertical list -> horizontal scroll strip, so it takes a fixed, short
+         height instead of fighting the radar for vertical space. */
+      .aircraft-grid {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 0.4rem;
+      }
+
+      .ac-card {
+        flex: 0 0 auto;
+        width: 230px;
+      }
+
+      #status-bar {
+        display: none;
+      }
+
+      #altitude-legend {
+        font-size: 0.52rem;
+        padding: 3px 5px;
+      }
+
+      footer {
+        height: 128px;
+        padding: 0.3rem;
+      }
+
+      /* 2-row grid: photo spans both rows on the left, flight info sits
+         top-right, the metric columns (the .scrollboard-metrics wrapper -
+         display:contents on desktop) become the second row. */
+      .scrollboard {
+        display: grid;
+        grid-template-columns: 80px 1fr;
+        grid-template-rows: auto 1fr;
+        align-items: stretch;
+        column-gap: 0.4rem;
+        row-gap: 0.15rem;
+        padding: 0.3rem;
+      }
+
+      .logo-container {
+        grid-column: 1;
+        grid-row: 1 / 3;
+        height: 100%;
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .banner-col-info {
+        grid-column: 2;
+        grid-row: 1;
+        min-width: 0;
+        max-width: 100%;
+        padding: 0 0.3rem;
+        border-right: none;
+      }
+
+      .scrollboard-metrics {
+        grid-column: 2;
+        grid-row: 2;
+        display: flex;
+        min-width: 0;
+      }
+
+      .scrollboard-metrics .banner-col {
+        padding: 0 0.3rem;
+      }
+
+      .airline-heading {
+        font-size: 0.85rem;
+      }
+
+      .aircraft-meta {
+        font-size: 0.62rem;
+      }
+
+      .route-container {
+        font-size: 0.62rem;
+      }
+
+      .primary-metric {
+        font-size: 0.85rem;
+      }
+
+      .secondary-metric {
+        font-size: 0.62rem;
+      }
+
+      .sub-title {
+        font-size: 0.5rem;
+      }
+    }
+
+    /* Short/landscape phones: keep the desktop side-by-side arrangement (a
+       wide-but-short screen suits it better than stacking) but narrow the
+       sidebar and shrink text so both columns actually fit. */
+    @media (max-height: 500px) and (orientation: landscape) {
+      main {
+        grid-template-columns: 1fr 200px;
+      }
+
+      .panel-title {
+        font-size: 0.58rem;
+      }
+
+      .ac-thumb {
+        width: 64px;
+        height: 42px;
+      }
+
+      footer {
+        height: 90px;
+      }
+
+      .airline-heading {
+        font-size: 0.85rem;
+      }
+
+      .primary-metric {
+        font-size: 0.9rem;
+      }
+
+      .secondary-metric {
+        font-size: 0.65rem;
+      }
+
+      .logo-container {
+        min-width: 80px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Full Screen Red Pulse Overlay -->
+  <div id="screen-pulse-overlay"></div>
+
+  <!-- Tap-to-start overlay: browsers block AudioContext/SpeechSynthesis until a user gesture -->
+  <div id="start-overlay">
+    <div class="start-title"><span class="pulse-dot"></span>&nbsp; Retro ADSB Radar Scope</div>
+    <div class="start-sub">Tap or click anywhere to start the feed and enable audio alerts</div>
+  </div>
+
+  <div id="burn-in-shield">
+  <main>
+    <div class="radar-wrapper" id="radarContainer">
+      <div id="map"></div>
+      <canvas id="radarCanvas"></canvas>
+      <div id="altitude-legend"></div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">Active Military Transponders Within 35NM</div>
+        <div id="aircraft-grid" class="aircraft-grid">
+          <div style="color:var(--text-dim); font-size:0.75rem; padding: 0.5rem; text-align:center;">Scanning sector...</div>
+        </div>
+        <div id="status-bar" style="font-size:0.58rem; color:var(--text-dim); margin-top:0.3rem;">
+          Station: 52.9529° N, 0.9547° W
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer>
+    <div class="scrollboard">
+      <div class="logo-container" id="sb-logo-box">
+        <span class="logo-fallback" id="sb-logo-text">--</span>
+      </div>
+
+      <div class="banner-col banner-col-info">
+        <div id="sb-airline" class="airline-heading">AWAITING LOCK</div>
+        <div id="sb-type" class="aircraft-meta">Type: --</div>
+        <div class="route-container" id="sb-route-container">
+          <div class="route-row">
+            <span class="route-label">From</span>
+            <span id="sb-from" style="color: var(--text-main);">--</span>
+          </div>
+          <div class="route-row">
+            <span class="route-label">To</span>
+            <span id="sb-to" style="color: var(--text-main);">--</span>
+            <span id="sb-route-tag" class="route-source-tag" style="display:none;"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- On desktop this wrapper is display:contents (invisible to layout - the three
+           columns below still lay out as direct flex children of .scrollboard, unchanged).
+           On mobile it becomes the second row of a 2-row scrollboard grid - see the
+           mobile media queries - so the metric columns can be grouped/reflowed as a unit
+           without duplicating them per breakpoint. -->
+      <div class="scrollboard-metrics">
+        <div class="banner-col metric-group">
+          <div class="sub-title">Range & Kinematics</div>
+          <div id="sb-distance" class="primary-metric">-- NM</div>
+          <div id="sb-alt" class="secondary-metric">Alt: -- ft</div>
+          <div id="sb-speed" class="secondary-metric">Spd: -- kts</div>
+        </div>
+
+        <div class="banner-col metric-group">
+          <div class="sub-title">Vector & V/S</div>
+          <div id="sb-rate" class="secondary-metric" style="font-weight: 700;">Rate: --</div>
+          <div id="sb-heading" class="secondary-metric">Hdng: --°</div>
+          <div id="sb-bearing" class="secondary-metric" style="font-size:0.72rem; color:var(--text-dim);">Bearing: --°</div>
+        </div>
+
+        <div class="banner-col metric-group">
+          <div class="sub-title">Time</div>
+          <div id="sb-flight-time" class="secondary-metric">Flight Time: --</div>
+          <div id="sb-eta" class="secondary-metric">ETA: --</div>
+        </div>
+      </div>
+    </div>
+  </footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+          onerror="console.error('LEAFLET FAILED TO LOAD - CHECK NETWORK');"></script>
+
+  <!-- On-phone debug console, opt-in via ?debug=1 in the URL. No Mac/devtools access on
+       this project's usual dev device, so this is the only way to see console.log/error
+       output and failed network requests directly on the phone that's showing the bug.
+       Loads eruda (an on-page devtools panel) only when the flag is present - zero cost
+       and no visible change otherwise. -->
+  <script>
+    if (new URLSearchParams(window.location.search).get('debug') === '1') {
+      const erudaScript = document.createElement('script');
+      erudaScript.src = 'https://cdn.jsdelivr.net/npm/eruda';
+      erudaScript.onload = () => window.eruda && window.eruda.init();
+      document.head.appendChild(erudaScript);
+    }
+  </script>
+
+  <script>
+    // Node.js CORS proxy hosted on Wispbyte (see server.js) - forwards both
+    // the adsb.fi point-lookup and the adsb.lol routeset POST, since neither
+    // upstream sends Access-Control-Allow-Origin for browser requests from
+    // arbitrary origins. Shared at module scope since both fetchLiveFlights()
+    // and queryAdsbLolRoute() need it.
+    const WORKER_URL = 'https://cors-proxy-radar.wisp.uno';
+    const ROUTESET_PATH = '/api/0/routeset';
+    const userConfig = { lat: 52.9529, lon: -0.9547, radiusNM: 35 };
+
+    // --- Postcode-based station location ---------------------------------
+    // Supports linking to e.g. {site}/radar/AB12 3CD - looks for a URL path
+    // segment immediately after one literally named "radar" and, if present,
+    // treats it as a UK postcode to geocode and re-centre the station on.
+    // Falls back to the hardcoded userConfig above whenever there's no such
+    // segment, the segment isn't a plausible postcode shape, or the lookup
+    // fails for any reason (network error, unmatched postcode, etc.) - this
+    // never blocks the radar from starting with its normal default.
+    //
+    // Uses postcodes.io: free, no API key, and (unlike the ADS-B APIs above)
+    // it actually sends Access-Control-Allow-Origin, so no proxy is needed
+    // here.
+    function extractPostcodeFromPath() {
+      const segments = window.location.pathname.split('/').map(decodeURIComponent).filter(Boolean);
+      const radarIndex = segments.findIndex((seg) => seg.toLowerCase() === 'radar');
+      if (radarIndex === -1 || radarIndex === segments.length - 1) return null;
+      return segments[radarIndex + 1];
+    }
+
+    // UK postcodes: an outward code (2-4 chars) followed by an inward code
+    // that's always exactly 3 characters (a digit then 2 letters). Accepts
+    // input with or without a space between the two (a link typed/shared
+    // without the space is common) and re-inserts it in the right place.
+    function normalizePostcode(raw) {
+      const compact = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+      if (compact.length < 5 || compact.length > 7) return null;
+      return `${compact.slice(0, -3)} ${compact.slice(-3)}`;
+    }
+
+    function formatStationLabel(lat, lon) {
+      const latDir = lat >= 0 ? 'N' : 'S';
+      const lonDir = lon >= 0 ? 'E' : 'W';
+      return `Station: ${Math.abs(lat).toFixed(4)}° ${latDir}, ${Math.abs(lon).toFixed(4)}° ${lonDir}`;
+    }
+
+    async function resolveStationCoords() {
+      const rawSegment = extractPostcodeFromPath();
+      if (!rawSegment) return;
+
+      const postcode = normalizePostcode(rawSegment);
+      if (!postcode) {
+        console.warn('[STATION] URL segment after /radar/ is not a plausible UK postcode, keeping default:', rawSegment);
+        return;
+      }
+
+      try {
+        const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`, {
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) {
+          console.warn('[STATION] Postcode lookup failed, keeping default coordinates:', postcode, res.status);
+          return;
+        }
+        const data = await res.json();
+        const result = data && data.result;
+        if (!result || !Number.isFinite(result.latitude) || !Number.isFinite(result.longitude)) {
+          console.warn('[STATION] Postcode lookup returned no usable result, keeping default coordinates:', postcode);
+          return;
+        }
+        userConfig.lat = result.latitude;
+        userConfig.lon = result.longitude;
+        console.log(`[STATION] Centred on ${postcode} (${result.latitude}, ${result.longitude})`);
+      } catch (err) {
+        console.warn('[STATION] Postcode lookup errored, keeping default coordinates:', postcode, err);
+      }
+    }
+
+    // Kicked off immediately at script load - this is a plain network
+    // request, not something that needs to wait on the start-overlay tap
+    // gesture. startFeed() awaits this before initialising the map, so the
+    // very first render is already centred correctly instead of snapping
+    // over afterwards.
+    const stationReadyPromise = resolveStationCoords();
+
+    let map = null;
+    let canvas = null;
+    let ctx = null;
+    let liveAircraft = [];
+    let lockedAircraft = null;
+    let isFetching = false;
+    let radarCircle = null;
+    let pollBackoffUntil = 0;
+    let consecutive429s = 0;
+    let aircraftPollTimer = null;
+    const AIRCRAFT_POLL_MS = 2500;
+    const AIRCRAFT_STALE_GRACE_MS = 5000;
+    const aircraftTrails = {};
+    // hex -> Date.now() of the last time the sweep beam passed this aircraft's bearing (CRT-style
+    // "blip brightens on sweep pass, fades until the next one" - see drawRadarScope). The locked
+    // aircraft is exempt and always drawn at full brightness regardless of this.
+    const aircraftLastSweepHit = {};
+    // hex -> Date.now() the first time this aircraft was seen this session - used for the
+    // scrollboard's "Flight Time" (time tracked, not a real off-block/departure timestamp,
+    // which ADS-B doesn't give us - see updateNearestScrollboard).
+    const aircraftFirstSeenAt = {};
+
+    // Home-use kiosk: audio alerts are always on, no mute toggle.
+    const audioAlertsEnabled = true;
+    const pulsed35Hexes = new Set();
+    const pulsed5Hexes = new Set();
+    const announcedEmergencyHexes = new Set();
+    let audioCtx = null;
+    let feedStarted = false;
+
+    // Debug/testing hook: a synthetic aircraft that gets merged into every poll's results
+    // for a limited time, so the emergency-lock path (scrollboard override, red pulse, tone,
+    // speech) can be exercised without waiting for a real squawk. See triggerTestSquawk().
+    let testAircraft = null;
+    let testAircraftExpiryAt = 0;
+
+    // Simple in-memory photo cache so we don't re-fetch the same aircraft's photo every 12s poll
+    const photoCache = {}; // key -> url string, or null for known-empty
+
+    // ---------------------------------------------------------------------
+    // Radar-scope aircraft silhouettes
+    // ---------------------------------------------------------------------
+    // The previous version depended on a local pw-silhouettes spritesheet. If the
+    // JSON file was not physically deployed beside this HTML file, the web server
+    // returned the site's HTML page instead of JSON, producing:
+    //   Unexpected token '<', "<!DOCTYPE ..." is not valid JSON
+    //
+    // These silhouettes are now drawn directly on the radar canvas. This removes the
+    // external/local spritesheet dependency entirely and gives the scope the same
+    // compact top-down aircraft look as the reference image: bright filled aircraft,
+    // dark outline, nose pointing along track, with different shapes for airliners,
+    // light aircraft, helicopters and military aircraft.
+    // ---------------------------------------------------------------------
+
+    function drawVectorAircraftSilhouette(ctx, ac, pt, heading, colorHex) {
+      const category = String(ac.category || '').trim().toUpperCase();
+      const type = String(ac.t || '').trim().toUpperCase();
+      const typeLower = type.toLowerCase();
+
+      // A few broad type/category hints keep the shapes believable without requiring
+      // another network request or an aircraft-type database.
+      const isHelicopter =
+        category === 'A7' || /^(R22|R44|EC20|EC30|EC35|EC45|EC55|EC75|H125|H130|H135|H145|H155|H160|AS3|AS32|B06|B407|B412|S76|S92|AW13|AW16|AW17)/.test(type);
+      const isLight =
+        category === 'A1' || category === 'A2' ||
+        /^(C1[0-9]|C2[0-9]|C3[0-9]|C4[0-9]|C5[0-9]|C6[0-9]|C7[0-9]|C8[0-9]|C9[0-9]|P28|PA1|PA2|PA3|PA4|DA4|DA5|SR2|TB[0-9]|BE[0-9]|SF2|G[A-Z0-9])/.test(type);
+      const isMilitary =
+        category === 'A5' || category === 'A6' ||
+        /^(F[0-9]|E[0-9]|T[0-9]|A10|B1|B2|B52|C130|C17|C5M|KC|P8|RC|U2|SR71|MIR|RAF|EUFI|F35|F22|F18|GRIP)/.test(type);
+
+      ctx.save();
+      ctx.translate(pt.x, pt.y);
+      // Canvas 0 degrees points right, while aircraft track 0 degrees is north.
+      // -90 degrees aligns the vector nose with track 0 / north.
+      ctx.rotate((heading - 90) * Math.PI / 180);
+
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.fillStyle = colorHex;
+      ctx.strokeStyle = '#050505';
+      ctx.lineWidth = 1.05;
+      ctx.shadowBlur = 0;
+
+      ctx.beginPath();
+
+      if (isHelicopter) {
+        // Compact top-down helicopter: rotor bar + body + tail boom.
+        ctx.ellipse(0, 0, 5.4, 2.9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(-1, 1.7);
+        ctx.lineTo(-7.5, 1.7);
+        ctx.lineTo(-9, 2.2);
+        ctx.lineTo(-7.2, 0.9);
+        ctx.lineTo(-1, 0.9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(-5.5, -4.6);
+        ctx.lineTo(5.5, -4.6);
+        ctx.moveTo(-5.5, 4.6);
+        ctx.lineTo(5.5, 4.6);
+        ctx.stroke();
+      } else if (isLight) {
+        // Small GA aircraft, deliberately narrow and slightly chunky like the reference.
+        ctx.moveTo(0, -9);
+        ctx.lineTo(1.5, -3.5);
+        ctx.lineTo(6.8, 1.8);
+        ctx.lineTo(6.3, 3.0);
+        ctx.lineTo(1.2, 1.5);
+        ctx.lineTo(1.0, 6.5);
+        ctx.lineTo(3.0, 9.0);
+        ctx.lineTo(2.0, 9.7);
+        ctx.lineTo(0, 7.0);
+        ctx.lineTo(-2.0, 9.7);
+        ctx.lineTo(-3.0, 9.0);
+        ctx.lineTo(-1.0, 6.5);
+        ctx.lineTo(-1.2, 1.5);
+        ctx.lineTo(-6.3, 3.0);
+        ctx.lineTo(-6.8, 1.8);
+        ctx.lineTo(-1.5, -3.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else if (isMilitary) {
+        // Fast-jet / military silhouette with swept wings.
+        ctx.moveTo(0, -11);
+        ctx.lineTo(1.6, -4.2);
+        ctx.lineTo(7.2, 2.4);
+        ctx.lineTo(6.2, 3.3);
+        ctx.lineTo(1.6, 1.5);
+        ctx.lineTo(1.0, 5.0);
+        ctx.lineTo(3.5, 8.5);
+        ctx.lineTo(2.4, 9.2);
+        ctx.lineTo(0, 6.8);
+        ctx.lineTo(-2.4, 9.2);
+        ctx.lineTo(-3.5, 8.5);
+        ctx.lineTo(-1.0, 5.0);
+        ctx.lineTo(-1.6, 1.5);
+        ctx.lineTo(-6.2, 3.3);
+        ctx.lineTo(-7.2, 2.4);
+        ctx.lineTo(-1.6, -4.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        // Main airliner silhouette: wide swept wings, twin tail fins and a recognisable nose.
+        ctx.moveTo(0, -12);
+        ctx.bezierCurveTo(1.5, -10, 2.0, -6, 2.2, -2.5);
+        ctx.lineTo(11.0, 4.2);
+        ctx.lineTo(10.2, 5.5);
+        ctx.lineTo(2.1, 3.0);
+        ctx.lineTo(2.0, 8.0);
+        ctx.lineTo(5.2, 10.7);
+        ctx.lineTo(4.1, 11.8);
+        ctx.lineTo(0, 9.4);
+        ctx.lineTo(-4.1, 11.8);
+        ctx.lineTo(-5.2, 10.7);
+        ctx.lineTo(-2.0, 8.0);
+        ctx.lineTo(-2.1, 3.0);
+        ctx.lineTo(-10.2, 5.5);
+        ctx.lineTo(-11.0, 4.2);
+        ctx.lineTo(-2.2, -2.5);
+        ctx.bezierCurveTo(-2.0, -6, -1.5, -10, 0, -12);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Small fuselage highlight makes the shape readable at low radar zoom.
+        ctx.beginPath();
+        ctx.moveTo(0, -9);
+        ctx.lineTo(0, 7);
+        ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+        ctx.lineWidth = 0.65;
+        ctx.stroke();
+      }
+
+      ctx.restore();
+      return true;
+    }
+
+    // Compatibility wrapper: keep the existing render call unchanged while making
+    // the silhouette implementation completely self-contained.
+    function drawPwSilhouette(ctx, ac, pt, heading, colorHex) {
+      return drawVectorAircraftSilhouette(ctx, ac, pt, heading, colorHex);
+    }
+
+    let scrollState = 'PAUSED_TOP';
+    let scrollTimer = 120;
+    let internalScrollPos = 0;
+
+    // Array of randomized bonus phrases to prepend or add to speech alerts
+    const randomAddonPhrases = [
+      "hold on to your fucking hats boys! it could be a fast one.",
+      "dont pull your willy too hard in excitement now!",
+      "heads up troops, things are getting spicy!",
+      "dont jizz too much in your pants but there is a",
+      "shit's about to get real, we've got a",
+      "hold my beer, im tracking a",
+      "look alive dumbass, incoming",
+      "no wanking on the job, we've got a",
+      "put your pants back on! we've got a",
+      "is it a bird? is it a plane? no well kind of, its a fucking",
+      "well spank my ass and call me amy as there is a"
+    ];
+
+    function initKioskAudio() {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+      } catch (e) {}
+    }
+
+    // Runs on the first user gesture (tap/click on the start overlay). Browsers require a
+    // real user gesture before AudioContext or SpeechSynthesis will produce sound, so nothing
+    // in announceMilitaryAircraft() can reliably fire until this has run at least once.
+    async function startFeed() {
+      if (feedStarted) return;
+      feedStarted = true;
+
+      // Make sure any postcode-based station override (see resolveStationCoords
+      // above) has finished before the map/radar are built around userConfig.
+      await stationReadyPromise;
+      const statusBar = document.getElementById('status-bar');
+      if (statusBar) statusBar.textContent = formatStationLabel(userConfig.lat, userConfig.lon);
+
+      initKioskAudio();
+      if ('speechSynthesis' in window) {
+        // Nudge speechSynthesis awake with a silent utterance, inside the gesture handler.
+        const warmup = new SpeechSynthesisUtterance('');
+        warmup.volume = 0;
+        window.speechSynthesis.speak(warmup);
+      }
+
+      const overlay = document.getElementById('start-overlay');
+      if (overlay) overlay.classList.add('hidden');
+
+      canvas = document.getElementById('radarCanvas');
+      ctx = canvas.getContext('2d');
+
+      initMap();
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+      buildAltitudeLegend();
+
+      applyNightMode();
+      setInterval(applyNightMode, 60000);
+      setInterval(cycleBurnInShift, BURN_IN_SHIFT_INTERVAL_MS);
+
+      requestAnimationFrame(drawRadarScope);
+      fetchLiveFlights();
+
+      // Test-squawk via URL, e.g. radar.html?testsquawk=7700 - handy from mobile where
+      // there's no keyboard for the shortcut below.
+      const testParam = new URLSearchParams(window.location.search).get('testsquawk');
+      if (testParam) triggerTestSquawk(testParam);
+    }
+
+    // ---------------------------------------------------------------------
+    // Screen-burn mitigation: every 24/7 static-content kiosk display (OLED especially, but
+    // plasma/LCD too over long enough time) risks burn-in from the scope rings, sidebar labels
+    // and scrollboard text always sitting in the same pixels. Nudging the whole visible UI
+    // (everything inside #burn-in-shield - i.e. not the full-screen overlays, which are
+    // siblings of it) by a couple of px every so often is the standard mitigation, and at that
+    // magnitude it's imperceptible during normal viewing.
+    // ---------------------------------------------------------------------
+    const BURN_IN_SHIFT_INTERVAL_MS = 90000;
+    const BURN_IN_OFFSETS = [[0, 0], [2, 0], [2, 2], [0, 2], [-2, 2], [-2, 0], [-2, -2], [0, -2], [2, -2]];
+    let burnInOffsetIdx = 0;
+
+    function cycleBurnInShift() {
+      const shieldEl = document.getElementById('burn-in-shield');
+      if (!shieldEl) return;
+      burnInOffsetIdx = (burnInOffsetIdx + 1) % BURN_IN_OFFSETS.length;
+      const [dx, dy] = BURN_IN_OFFSETS[burnInOffsetIdx];
+      shieldEl.style.transform = `translate(${dx}px, ${dy}px)`;
+    }
+
+    // ---------------------------------------------------------------------
+    // Night mode: dims the whole page (brightness/saturation, see body.night-mode CSS) during
+    // configured local hours, easier on the eyes - and on a kiosk display's longevity - than
+    // running full brightness overnight. Purely based on the viewing device's own clock.
+    // ---------------------------------------------------------------------
+    const NIGHT_MODE_START_HOUR = 21; // 9pm
+    const NIGHT_MODE_END_HOUR = 6;    // 6am
+
+    function applyNightMode() {
+      const hour = new Date().getHours();
+      const isNight = hour >= NIGHT_MODE_START_HOUR || hour < NIGHT_MODE_END_HOUR;
+      document.body.classList.toggle('night-mode', isNight);
+    }
+
+    // Keyboard shortcut for testing the alert-lock path at a desktop: 5/6/7 -> 7500/7600/7700, 9 -> 7777 (QRA).
+    // Also tracks the last few letters typed so "ufo" (typed in order, not necessarily fast)
+    // triggers the UFO easter egg - see triggerUfoSighting().
+    let ufoTypedBuffer = '';
+    document.addEventListener('keydown', (e) => {
+      if (!feedStarted) return;
+      if (e.key === '5') triggerTestSquawk('7500');
+      else if (e.key === '6') triggerTestSquawk('7600');
+      else if (e.key === '7') triggerTestSquawk('7700');
+      else if (e.key === '9') triggerTestSquawk('7777');
+
+      if (/^[a-zA-Z]$/.test(e.key)) {
+        ufoTypedBuffer = (ufoTypedBuffer + e.key.toLowerCase()).slice(-3);
+        if (ufoTypedBuffer === 'ufo') {
+          triggerUfoSighting();
+          ufoTypedBuffer = '';
+        }
+      } else if (e.key.length === 1) {
+        ufoTypedBuffer = ''; // any other single-character keystroke breaks the sequence
+      }
+    });
+
+
+    const aircraftModelNames = {
+      'C17': 'Boeing C-17 Globemaster',
+      'C130': 'Lockheed C-130 Hercules',
+      'F16': 'Lockheed Martin F-16 Fighting Falcon',
+      'F15': 'McDonnell Douglas F-15 Eagle',
+      'F18': 'Boeing F/A-18 Hornet',
+      'F35': 'Lockheed Martin F-35 Lightning II',
+      'EF20': 'Eurofighter Typhoon',
+      'EUFI': 'Eurofighter Typhoon',
+      'TYPH': 'Eurofighter Typhoon',
+      'A400': 'Airbus A400M Atlas',
+      'K35R': 'Boeing KC-135 Stratotanker',
+      'KC135': 'Boeing KC-135 Stratotanker',
+      'P8': 'Boeing P-8 Poseidon',
+      'E3TF': 'Boeing E-3 Sentry AWACS',
+      'CH47': 'Boeing CH-47 Chinook',
+      'AH64': 'Boeing AH-64 Apache',
+      'UH60': 'Sikorsky UH-60 Black Hawk',
+      'V22': 'Bell Boeing V-22 Osprey',
+      'HAWK': 'BAE Systems Hawk',
+      'TOR': 'Panavia Tornado',
+      'RC135': 'Boeing RC-135 Rivet Joint'
+    };
+
+    function playAlertTone() {
+      if (!audioAlertsEnabled) return;
+      try {
+        if (!audioCtx) initKioskAudio();
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.15);
+        
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+      } catch (e) {}
+    }
+
+    // Wailing two-tone siren (European emergency-vehicle style: sweeps between a low and
+    // high pitch a few times) - distinct from the short single-beep playAlertTone(), reserved
+    // for an actual emergency-squawk lock so it doesn't get confused with a routine proximity
+    // ping. Returns its total duration in ms so callers can time a follow-up speech announcement.
+    function playEmergencySiren() {
+      if (!audioAlertsEnabled) return 0;
+      try {
+        if (!audioCtx) initKioskAudio();
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        const now = audioCtx.currentTime;
+        const lowFreq = 600;
+        const highFreq = 1300;
+        const sweepSeconds = 0.4;
+        const cycles = 4;
+        const totalSeconds = cycles * sweepSeconds * 2;
+
+        gain.gain.setValueAtTime(0.16, now);
+        osc.frequency.setValueAtTime(lowFreq, now);
+        for (let i = 0; i < cycles; i++) {
+          const upEnd = now + (i * 2 + 1) * sweepSeconds;
+          const downEnd = now + (i * 2 + 2) * sweepSeconds;
+          osc.frequency.linearRampToValueAtTime(highFreq, upEnd);
+          osc.frequency.linearRampToValueAtTime(lowFreq, downEnd);
+        }
+        gain.gain.setValueAtTime(0.16, now + totalSeconds - 0.15);
+        gain.gain.linearRampToValueAtTime(0, now + totalSeconds);
+
+        osc.start(now);
+        osc.stop(now + totalSeconds + 0.05);
+        return totalSeconds * 1000;
+      } catch (e) {
+        return 0;
+      }
+    }
+
+    // Spoken emergency callout - separate from announceMilitaryAircraft() (that one is for
+    // routine military-proximity pings, not squawk emergencies).
+    const DIGIT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+
+    // TTS engines read a bare "7700" as "seven thousand seven hundred" - squawks are read
+    // digit-by-digit in real life ("seven seven zero zero"), so spell each digit out as a
+    // word rather than relying on spacing/punctuation to coax the engine into it.
+    function squawkToSpokenDigits(squawk) {
+      return String(squawk || '').split('').map(ch => DIGIT_WORDS[ch] !== undefined ? DIGIT_WORDS[ch] : ch).join(' ');
+    }
+
+    function announceEmergencySquawk(ac) {
+      if (!audioAlertsEnabled) return;
+      if (!('speechSynthesis' in window)) return;
+      const callsign = ac.flight ? ac.flight.trim() : ac.hex;
+      const squawk = ac.squawk || '';
+      const spokenSquawk = squawkToSpokenDigits(squawk);
+      const meaning = SQUAWK_MEANINGS[squawk] || 'an unrecognized alert code';
+      const isQra = squawk === QRA_SQUAWK;
+      // 7777 isn't a distress squawk, so it gets its own opener/verb rather than being
+      // announced as an "emergency" like the three real ICAO codes.
+      const speechText = isQra
+        ? `Alert, alert. The callsign ${callsign} is squawking ${spokenSquawk} - that means ${meaning}.`
+        : `Emergency, emergency. A plane has put out ${spokenSquawk} with the callsign ${callsign} - that means ${meaning}.`;
+      const utterance = new SpeechSynthesisUtterance(speechText);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    function triggerRedPulse() {
+      const overlay = document.getElementById('screen-pulse-overlay');
+      if (!overlay) return;
+      overlay.classList.remove('screen-pulse-active');
+      void overlay.offsetWidth; 
+      overlay.classList.add('screen-pulse-active');
+    }
+
+    function getCardinalFromDeg(deg) {
+      const val = Math.floor((deg + 22.5) / 45);
+      const arr = ["North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest"];
+      return arr[(val % 8)];
+    }
+
+    // name + coordinates (used for the ETA calc - see getDestinationCoords) for the fixed set
+    // of airports the heuristic route guess in resolveFlightRoute() can return, plus a few
+    // other common ones seen in hexdb responses.
+    const airportDatabase = {
+      'EGLL': { name: 'London Heathrow, UK', lat: 51.4700, lon: -0.4543 },
+      'EGKK': { name: 'London Gatwick, UK', lat: 51.1481, lon: -0.1903 },
+      'EGGW': { name: 'London Luton, UK', lat: 51.8747, lon: -0.3683 },
+      'EGSS': { name: 'London Stansted, UK', lat: 51.8860, lon: 0.2389 },
+      'EGCC': { name: 'Manchester Airport, UK', lat: 53.3537, lon: -2.2750 },
+      'EGBB': { name: 'Birmingham Airport, UK', lat: 52.4539, lon: -1.7480 },
+      'EGNX': { name: 'East Midlands Airport, UK', lat: 52.8311, lon: -1.3281 },
+      'EGPH': { name: 'Edinburgh Airport, UK', lat: 55.9500, lon: -3.3725 },
+      'EGPF': { name: 'Glasgow Airport, UK', lat: 55.8642, lon: -4.4328 },
+      'EGNT': { name: 'Newcastle Airport, UK', lat: 55.0375, lon: -1.6917 },
+      'EGVN': { name: 'RAF Brize Norton, UK', lat: 51.7500, lon: -1.5836 },
+      'EGUN': { name: 'RAF Mildenhall, UK', lat: 52.3617, lon: 0.4864 },
+      'EGVA': { name: 'RAF Fairford, UK', lat: 51.6822, lon: -1.7900 },
+      'EGXC': { name: 'RAF Coningsby, UK', lat: 53.0929, lon: -0.1650 },
+      'EGUL': { name: 'RAF Lakenheath, UK', lat: 52.4093, lon: 0.5610 },
+      'ETAR': { name: 'Ramstein Air Base, Germany', lat: 49.4369, lon: 7.6003 },
+      'EHAM': { name: 'Amsterdam Schiphol, Netherlands', lat: 52.3086, lon: 4.7639 },
+      'LFPG': { name: 'Paris Charles de Gaulle, France', lat: 49.0097, lon: 2.5479 },
+      'EDDF': { name: 'Frankfurt Airport, Germany', lat: 50.0379, lon: 8.5622 },
+      'EIDW': { name: 'Dublin Airport, Ireland', lat: 53.4213, lon: -6.2701 },
+      'LEMD': { name: 'Madrid Barajas, Spain', lat: 40.4983, lon: -3.5676 },
+      'LIRF': { name: 'Rome Fiumicino, Italy', lat: 41.8003, lon: 12.2389 },
+      'KJFK': { name: 'New York JFK, USA', lat: 40.6413, lon: -73.7781 },
+      'KLAX': { name: 'Los Angeles International, USA', lat: 33.9416, lon: -118.4085 },
+      'OMDB': { name: 'Dubai International, UAE', lat: 25.2532, lon: 55.3657 }
+    };
+
+    function airportName(code) {
+      const entry = airportDatabase[(code || '').toUpperCase()];
+      return entry ? entry.name : '';
+    }
+
+    // Best-effort destination coordinates for the ETA calc: prefer real lat/lon that came back
+    // from adsbdb with the route itself (see queryAdsbdb), then fall back to our small local
+    // airport table for hexdb/heuristic routes. Returns null if neither has it (ETA is then
+    // just hidden rather than showing a wrong number).
+    function getDestinationCoords(route) {
+      if (route.toLat !== undefined && route.toLon !== undefined) {
+        return { lat: route.toLat, lon: route.toLon };
+      }
+      const entry = airportDatabase[(route.toCode || '').toUpperCase()];
+      return entry ? { lat: entry.lat, lon: entry.lon } : null;
+    }
+
+
+    // ---------------------------------------------------------------------
+    // Route resolution uses API data only. No callsign/heading heuristics are used because
+    // they can turn an unknown route into a convincing but completely false destination.
+    // Cache entries are keyed by aircraft hex + callsign and expire so a reused callsign cannot
+    // keep an old route forever.
+    const ROUTE_CACHE_TTL_MS = 5 * 60 * 1000;
+    const ROUTE_MAX_STALE_MS = 15 * 60 * 1000;
+    const routeCache = {};
+    let adsbdbBackoffUntil = 0;
+    let hexdbBackoffUntil = 0;
+
+    function routeCacheKey(ac) {
+      const hex = (ac && ac.hex || '').trim().toUpperCase();
+      const callsign = (ac && ac.flight || '').trim().toUpperCase();
+      return `${hex}|${callsign}`;
+    }
+
+    function validAirportCode(code) {
+      return typeof code === 'string' && /^[A-Z0-9]{3,4}$/.test(code.trim().toUpperCase());
+    }
+
+    function normaliseRoute(route, source) {
+      if (!route || !validAirportCode(route.fromCode) || !validAirportCode(route.toCode)) return null;
+      const fromCode = route.fromCode.trim().toUpperCase();
+      const toCode = route.toCode.trim().toUpperCase();
+      if (fromCode === toCode) return null;
+      const clean = {
+        fromCode, toCode,
+        fromName: typeof route.fromName === 'string' ? route.fromName.trim() : '',
+        toName: typeof route.toName === 'string' ? route.toName.trim() : '',
+        source
+      };
+      if (Number.isFinite(route.toLat) && Number.isFinite(route.toLon) && route.toLat >= -90 && route.toLat <= 90 && route.toLon >= -180 && route.toLon <= 180) {
+        clean.toLat = route.toLat; clean.toLon = route.toLon;
+      }
+      if (Number.isFinite(route.fromLat) && Number.isFinite(route.fromLon) && route.fromLat >= -90 && route.fromLat <= 90 && route.fromLon >= -180 && route.fromLon <= 180) {
+        clean.fromLat = route.fromLat; clean.fromLon = route.fromLon;
+      }
+      return clean;
+    }
+
+    // Conservative sanity check. We reject only strong contradictions because aircraft can turn
+    // and ADS-B track can be temporarily stale.
+    function routePassesPositionCheck(route, ac) {
+      if (!route || !ac || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return false;
+      const hasDestinationCoords = Number.isFinite(route.toLat) && Number.isFinite(route.toLon);
+      const hasOriginCoords = Number.isFinite(route.fromLat) && Number.isFinite(route.fromLon);
+      if (!hasDestinationCoords && !hasOriginCoords) return true;
+
+      const speed = Number(ac.gs);
+      const track = Number(ac.track);
+      if (hasDestinationCoords && Number.isFinite(speed) && speed >= 80 && Number.isFinite(track)) {
+        const destBearing = calcBearing(ac.lat, ac.lon, route.toLat, route.toLon);
+        const diff = Math.abs(((destBearing - track + 540) % 360) - 180);
+        const destDistance = calcDistanceNM(ac.lat, ac.lon, route.toLat, route.toLon);
+        if (destDistance > 80 && diff > 125) return false;
+      }
+      if (hasOriginCoords) {
+        const originDistance = calcDistanceNM(ac.lat, ac.lon, route.fromLat, route.fromLon);
+        if (originDistance > 5000) return false;
+      }
+      return true;
+    }
+
+    // ADSB.lol's routeset endpoint is especially useful for callsigns such as
+    // SHT4YL (British Airways Shuttle) and TOM5MH (TUI), where the transponder
+    // callsign does not necessarily contain the commercial flight number.
+    // It accepts the live aircraft position as well as the callsign and returns
+    // a current route candidate when its route database can resolve it.
+    async function queryAdsbLolRoute(ac) {
+      const callsign = (ac && ac.flight || '').trim().toUpperCase();
+      if (!callsign || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return null;
+      try {
+        // api.adsb.lol doesn't send Access-Control-Allow-Origin for browser requests
+        // from arbitrary origins either, so this goes through the same Wispbyte proxy
+        // as the point lookups above (see server.js) rather than hitting adsb.lol
+        // directly. Note: adsb.lol is known to 403 datacenter/cloud IPs, which is what
+        // this proxy's own outbound requests look like to it - if that happens here,
+        // this call fails gracefully (falls through to queryAdsbdb/queryHexdb below)
+        // rather than breaking anything.
+        const res = await fetch(`${WORKER_URL}${ROUTESET_PATH}`, {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          cache: 'no-store',
+          body: JSON.stringify({ planes: [{ callsign, lat: Number(ac.lat), lng: Number(ac.lon) }] })
+        });
+        if (res.status === 429) return undefined;
+        if (!res.ok) return null;
+        const data = await res.json();
+        const row = Array.isArray(data) ? data.find(r => String(r && r.callsign || '').toUpperCase() === callsign) || data[0] : null;
+        if (!row) return null;
+
+        // A false 'plausible' flag means the route database could not reconcile
+        // the route with the supplied live position. Do not display it as verified.
+        if (row.plausible === false || row.plausible === 0 || row.plausible === '0') return null;
+
+        const airports = Array.isArray(row._airports) ? row._airports : [];
+        const routeIata = String(row._airport_codes_iata || '').toUpperCase().split('-').filter(Boolean);
+        const routeIcao = String(row.airport_codes || '').toUpperCase().split('-').filter(Boolean);
+        if (routeIata.length < 2 && routeIcao.length < 2) return null;
+
+        // routeset can return a multi-leg chain (e.g. DEN-SAN-SFO). For the
+        // current flight, use the first and last airport in that chain.
+        const fromCode = routeIata.length >= 2 ? routeIata[0] : routeIcao[0];
+        const toCode = routeIata.length >= 2 ? routeIata[routeIata.length - 1] : routeIcao[routeIcao.length - 1];
+        if (!validAirportCode(fromCode) || !validAirportCode(toCode) || fromCode === toCode) return null;
+
+        const airportForCode = (code) => {
+          const found = airports.find(a => String(a && (a.iata || '')).toUpperCase() === code || String(a && (a.icao || '')).toUpperCase() === code);
+          if (found) return found;
+          const db = airportDatabase[String(code).toUpperCase()];
+          return db ? { name: db.name, lat: db.lat, lon: db.lon, iata: code } : null;
+        };
+        const from = airportForCode(fromCode);
+        const to = airportForCode(toCode);
+
+        return normaliseRoute({
+          fromCode,
+          toCode,
+          fromName: from ? (from.name || from.location || '') : '',
+          toName: to ? (to.name || to.location || '') : '',
+          fromLat: from && Number(from.lat),
+          fromLon: from && Number(from.lon),
+          toLat: to && Number(to.lat),
+          toLon: to && Number(to.lon)
+        }, 'adsb.lol');
+      } catch (err) {
+        console.warn('[ROUTE] ADSB.lOL routeset lookup failed:', err);
+        return null;
+      }
+    }
+
+    async function queryAdsbdb(callsign) {
+      if (Date.now() < adsbdbBackoffUntil) return undefined;
+      try {
+        const res = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
+        if (res.status === 429) { adsbdbBackoffUntil = Date.now() + 30000; return undefined; }
+        if (!res.ok) return null;
+        const data = await res.json();
+        const route = data && data.response && data.response.flightroute;
+        if (!route || !route.origin || !route.destination) return null;
+        return normaliseRoute({
+          fromCode: route.origin.iata_code || route.origin.icao_code,
+          toCode: route.destination.iata_code || route.destination.icao_code,
+          fromName: route.origin.name ? `${route.origin.name}${route.origin.municipality ? `, ${route.origin.municipality}` : ''}` : '',
+          toName: route.destination.name ? `${route.destination.name}${route.destination.municipality ? `, ${route.destination.municipality}` : ''}` : '',
+          fromLat: Number(route.origin.latitude), fromLon: Number(route.origin.longitude),
+          toLat: Number(route.destination.latitude), toLon: Number(route.destination.longitude)
+        }, 'adsbdb');
+      } catch (err) { console.warn('[ROUTE] ADSBDB lookup failed:', err); return null; }
+    }
+
+    async function queryHexdb(callsign) {
+      if (Date.now() < hexdbBackoffUntil) return undefined;
+      try {
+        const res = await fetch(`https://hexdb.io/api/v1/route/icao/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
+        if (res.status === 429) { hexdbBackoffUntil = Date.now() + 30000; return undefined; }
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!data || !(data.orig_iata || data.orig_icao) || !(data.dest_iata || data.dest_icao)) return null;
+        const fromIcao = validAirportCode(data.orig_icao) ? data.orig_icao.toUpperCase() : null;
+        const toIcao = validAirportCode(data.dest_icao) ? data.dest_icao.toUpperCase() : null;
+        const from = fromIcao && airportDatabase[fromIcao];
+        const to = toIcao && airportDatabase[toIcao];
+        return normaliseRoute({
+          fromCode: data.orig_iata || data.orig_icao, toCode: data.dest_iata || data.dest_icao,
+          fromName: from ? from.name : '', toName: to ? to.name : '',
+          fromLat: from ? from.lat : undefined, fromLon: from ? from.lon : undefined,
+          toLat: to ? to.lat : undefined, toLon: to ? to.lon : undefined
+        }, 'hexdb');
+      } catch (err) { console.warn('[ROUTE] HexDB lookup failed:', err); return null; }
+    }
+
+    async function fetchRoutesForAircraft(acList) {
+      const ac = acList && acList[0];
+      if (!ac) return;
+      const callsign = (ac.flight || '').trim().toUpperCase();
+      if (!callsign || !/^[A-Z0-9]{3,8}$/.test(callsign)) return;
+
+      const key = routeCacheKey(ac);
+      const now = Date.now();
+      const cached = routeCache[key];
+      if (cached && now - cached.checkedAt < ROUTE_CACHE_TTL_MS) return;
+
+      // Try the live position-aware routeset first. This is the key fix for
+      // non-standard airline callsigns such as SHT4YL and TOM5MH.
+      let result = await queryAdsbLolRoute(ac);
+      if (result === undefined) {
+        // Keep going to the other providers if routeset is temporarily rate-limited.
+        result = null;
+      }
+      if (result && !routePassesPositionCheck(result, ac)) {
+        console.warn('[ROUTE] rejected ADSB.lol route after validation', callsign, result);
+        result = null;
+      }
+
+      if (!result) result = await queryAdsbdb(callsign);
+      if (result === undefined) return;
+      if (result && !routePassesPositionCheck(result, ac)) {
+        console.warn('[ROUTE] rejected ADSBDB route after validation', callsign, result);
+        result = null;
+      }
+      if (!result) {
+        result = await queryHexdb(callsign);
+        if (result === undefined) return;
+        if (result && !routePassesPositionCheck(result, ac)) {
+          console.warn('[ROUTE] rejected HexDB route after validation', callsign, result);
+          result = null;
+        }
+      }
+
+      if (result) {
+        routeCache[key] = { route: result, checkedAt: now };
+        console.log('[ROUTE] refreshed', key, result);
+      } else if (cached && now - cached.checkedAt < ROUTE_MAX_STALE_MS) {
+        cached.checkedAt = now;
+        cached.refreshFailed = true;
+      } else {
+        routeCache[key] = { route: null, checkedAt: now };
+      }
+    }
+
+    function resolveFlightRoute(flightStr, ac) {
+      const entry = routeCache[routeCacheKey(ac || { flight: flightStr })];
+      return entry && entry.route ? entry.route : null;
+    }
+
+    function announceMilitaryAircraft(ac) {
+      if (!audioAlertsEnabled) return;
+
+      const dist = calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
+      let triggeredPulse = false;
+
+      if (dist <= 5.0 && !pulsed5Hexes.has(ac.hex)) {
+        pulsed5Hexes.add(ac.hex);
+        pulsed35Hexes.add(ac.hex);
+        triggeredPulse = true;
+        playAlertTone();
+        triggerRedPulse();
+
+        setTimeout(() => {
+          if (!audioAlertsEnabled) return;
+          const callsign = ac.flight ? ac.flight.trim() : 'Unknown callsign';
+          const bearing = calcBearing(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
+          const posCardinal = getCardinalFromDeg(bearing);
+          const trackCardinal = getCardinalFromDeg(ac.track !== undefined ? ac.track : 0);
+          const altText = ac.alt_baro ? `${Math.round(ac.alt_baro)} feet` : 'ground level';
+          
+          const speedKts = ac.gs !== undefined ? Math.round(ac.gs) : 0;
+          const speedMph = Math.round(speedKts * 1.15078);
+          
+          // Randomly select one of the phrases from the array to add on top
+          const randomPhrase = randomAddonPhrases[Math.floor(Math.random() * randomAddonPhrases.length)];
+
+          const speechText = `${randomPhrase} Proximity alert. Military aircraft callsign ${callsign} is heading in from the ${posCardinal} and moving ${trackCardinal} at ${altText} altitude, travelling at ${speedKts} knots, or ${speedMph} miles per hour, ${dist.toFixed(1)} miles away.`;
+          
+          if ('speechSynthesis' in window) {
+            const utterance = new SpeechSynthesisUtterance(speechText);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            window.speechSynthesis.speak(utterance);
+          }
+        }, 350);
+      }
+
+      if (!triggeredPulse && dist <= 35.0 && !pulsed35Hexes.has(ac.hex)) {
+        pulsed35Hexes.add(ac.hex);
+        playAlertTone();
+        triggerRedPulse();
+      }
+    }
+
+    function calcDistanceNM(lat1, lon1, lat2, lon2) {
+      const R = 3440.065;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function calcBearing(lat1, lon1, lat2, lon2) {
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+      const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+                Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+      let brng = Math.atan2(y, x) * 180 / Math.PI;
+      return Math.round((brng + 360) % 360);
+    }
+
+    // Altitude-banded colour for the scope silhouette/label of routine traffic (military,
+    // QRA, and emergency squawks still win out over this - see silColor in drawRadarScope).
+    // Bands roughly follow common ATC/flight-level intuition: ground/low circuit traffic,
+    // low-level GA, mid-level regional/climb-descent, upper airways, and cruise-altitude
+    // long-haul. Order matters - checked low to high. Kept in sync with the on-screen legend
+    // built in buildAltitudeLegend().
+    const ALTITUDE_BANDS = [
+      { maxFt: 3000, color: '#ff4d94', label: '< 3,000 ft' },
+      { maxFt: 10000, color: '#ff9900', label: '3,000–10,000 ft' },
+      { maxFt: 24000, color: '#ffe600', label: '10,000–24,000 ft' },
+      { maxFt: 34000, color: '#00ff66', label: '24,000–34,000 ft' },
+      { maxFt: Infinity, color: '#00bfff', label: '34,000+ ft' }
+    ];
+
+    function altitudeColor(altBaro) {
+      if (altBaro === undefined || altBaro === null || altBaro === 'ground') return '#7a8a94'; // unknown/on-ground - neutral grey
+      const alt = Number(altBaro);
+      if (Number.isNaN(alt)) return '#7a8a94';
+      for (const band of ALTITUDE_BANDS) {
+        if (alt < band.maxFt) return band.color;
+      }
+      return ALTITUDE_BANDS[ALTITUDE_BANDS.length - 1].color;
+    }
+
+    // One-time legend build for the altitude colour key (see #altitude-legend in the HTML).
+    function buildAltitudeLegend() {
+      const el = document.getElementById('altitude-legend');
+      if (!el) return;
+      el.innerHTML = ALTITUDE_BANDS.map(b =>
+        `<div class="legend-row"><span class="legend-dot" style="background:${b.color};"></span>${b.label}</div>`
+      ).join('');
+    }
+
+    const EMERGENCY_SQUAWKS = ['7500', '7600', '7700'];
+    const QRA_SQUAWK = '7777';
+    const ALERT_SQUAWKS = [...EMERGENCY_SQUAWKS, QRA_SQUAWK];
+    const EMERGENCY_LOCK_RADIUS_NM = 250;
+
+    // What each code actually means, used in both the scrollboard label and the spoken
+    // callout. 7500/7600/7700 are the standard ICAO distress codes; 7777 isn't a distress
+    // squawk - it's the UK/NATO convention for a Quick Reaction Alert fighter intercept -
+    // so it gets its own wording rather than being lumped in as an "emergency".
+    const SQUAWK_MEANINGS = {
+      '7500': 'a hijacking or unlawful interference',
+      '7600': 'a radio failure',
+      '7700': 'a general emergency',
+      '7777': 'a Quick Reaction Alert fighter intercept'
+    };
+
+    function isEmergencySquawk(ac) {
+      return EMERGENCY_SQUAWKS.includes(ac.squawk);
+    }
+
+    // True distress codes OR a QRA intercept - both take scrollboard/canvas priority over
+    // routine traffic, just with different wording once locked (see updateNearestScrollboard).
+    function isAlertSquawk(ac) {
+      return ALERT_SQUAWKS.includes(ac.squawk);
+    }
+
+    // ---------------------------------------------------------------------
+    // Test-squawk injector: for exercising the emergency-lock path (scrollboard override,
+    // red pulse, tone, speech) without waiting for a real 7500/7600/7700/7777. Trigger via:
+    //   - browser console: triggerTestSquawk('7700')
+    //   - URL param on load: radar.html?testsquawk=7700
+    //   - keyboard: press 5 / 6 / 7 / 9 once the feed has started (9 = 7777 QRA)
+    // The fake aircraft is merged into liveAircraft on every poll for TEST_AIRCRAFT_TTL_MS,
+    // then expires on its own - no cleanup step needed.
+    // ---------------------------------------------------------------------
+    const TEST_AIRCRAFT_TTL_MS = 90000;
+
+    function buildTestAircraft(squawk) {
+      const bearingRad = Math.random() * 2 * Math.PI;
+      const distNM = 3 + Math.random() * 8; // a few NM out, well inside the 35 NM scope
+      const dLat = (distNM / 60) * Math.cos(bearingRad);
+      const dLon = (distNM / 60) * Math.sin(bearingRad) / Math.cos(userConfig.lat * Math.PI / 180);
+      return {
+        // Random suffix so announcedEmergencyHexes/pulsed sets don't swallow repeat tests.
+        hex: 'TEST' + Math.floor(Math.random() * 9000 + 1000),
+        flight: 'TESTSQK ',
+        lat: userConfig.lat + dLat,
+        lon: userConfig.lon + dLon,
+        alt_baro: 12000,
+        gs: 280,
+        track: Math.floor(Math.random() * 360),
+        squawk: squawk,
+        t: 'B738',
+        category: 'A3'
+      };
+    }
+
+    function triggerTestSquawk(squawk) {
+      squawk = String(squawk || '7700');
+      if (!ALERT_SQUAWKS.includes(squawk)) {
+        console.warn(`[TEST] "${squawk}" isn't 7500/7600/7700/7777 - defaulting to 7700`);
+        squawk = '7700';
+      }
+      testAircraft = buildTestAircraft(squawk);
+      testAircraftExpiryAt = Date.now() + TEST_AIRCRAFT_TTL_MS;
+      console.log(`[TEST] Injecting fake squawk ${squawk} aircraft (${testAircraft.hex}) for ${TEST_AIRCRAFT_TTL_MS / 1000}s`);
+
+      // Apply immediately rather than waiting for the next 12s poll.
+      liveAircraft = liveAircraft.filter(a => !a.hex || !a.hex.startsWith('TEST')).concat([testAircraft]);
+      recomputeAircraftPixelCache(); // liveAircraft changed outside the normal poll cycle
+      updateUIState(true);
+    }
+    window.triggerTestSquawk = triggerTestSquawk;
+
+    // ---------------------------------------------------------------------
+    // UFO easter egg: typing "ufo" on the keyboard (once the feed has started) spawns a fake
+    // unidentified contact a few NM out, same TTL/merge pattern as the test-squawk injector
+    // above. Type "UFO" (ac.t) runs through the exact same drawPwSilhouette() lookup as any
+    // real aircraft - pw-silhouettes has no "UFO" artwork and category "A0" (no info) has no
+    // generic either, so nothing is drawn but the label, same as any other uncovered type.
+    // The rest is deliberately unremarkable: placeholder altitude/speed, and the
+    // REGISTRATION_OVERRIDES 'UFO1' badge (see fetchAircraftPhoto) instead of a real airline
+    // logo. Most sightings squawk a normal 1200; some fraction squawk 7700 instead so it
+    // occasionally takes over the scrollboard/siren like a real emergency.
+    // ---------------------------------------------------------------------
+    const UFO_AIRCRAFT_TTL_MS = 90000;
+    const UFO_SQUAWK_7700_CHANCE = 0.3;
+    let ufoAircraft = null;
+    let ufoAircraftExpiryAt = 0;
+
+    function buildUfoAircraft() {
+      const bearingRad = Math.random() * 2 * Math.PI;
+      const distNM = 3 + Math.random() * 8;
+      const dLat = (distNM / 60) * Math.cos(bearingRad);
+      const dLon = (distNM / 60) * Math.sin(bearingRad) / Math.cos(userConfig.lat * Math.PI / 180);
+      return {
+        hex: 'UFO' + Math.floor(Math.random() * 9000 + 1000),
+        flight: 'UFO154 ',
+        r: 'UFO1', // drives the REGISTRATION_OVERRIDES logo/route badge
+        lat: userConfig.lat + dLat,
+        lon: userConfig.lon + dLon,
+        alt_baro: 55000 + Math.floor(Math.random() * 15000), // placeholder: implausibly high
+        gs: 900 + Math.floor(Math.random() * 500), // placeholder: implausibly fast
+        track: Math.floor(Math.random() * 360),
+        squawk: Math.random() < UFO_SQUAWK_7700_CHANCE ? '7700' : '1200',
+        t: 'UFO',
+        category: 'A0'
+      };
+    }
+
+    function triggerUfoSighting() {
+      ufoAircraft = buildUfoAircraft();
+      ufoAircraftExpiryAt = Date.now() + UFO_AIRCRAFT_TTL_MS;
+      console.log(`[UFO] Unidentified contact ${ufoAircraft.hex} inbound${ufoAircraft.squawk === '7700' ? ' - squawking 7700' : ''}, for ${UFO_AIRCRAFT_TTL_MS / 1000}s`);
+
+      liveAircraft = liveAircraft.filter(a => !a.hex || !a.hex.startsWith('UFO')).concat([ufoAircraft]);
+      recomputeAircraftPixelCache(); // liveAircraft changed outside the normal poll cycle
+      updateUIState(true);
+    }
+    window.triggerUfoSighting = triggerUfoSighting;
+
+    // The only place a route (From/To) is ever displayed is the scrollboard, locked onto
+    // whichever aircraft is selected below. Route lookups should only ever target that one
+    // aircraft - never the whole liveAircraft list, or we flood adsbdb/hexdb with lookups
+    // nobody sees.
+    function findNearestAircraft(acList) {
+      const validAc = (acList || []).filter(a => a.lat && a.lon);
+      if (validAc.length === 0) return null;
+      return [...validAc].sort((a, b) =>
+        calcDistanceNM(userConfig.lat, userConfig.lon, a.lat, a.lon) -
+        calcDistanceNM(userConfig.lat, userConfig.lon, b.lat, b.lon)
+      )[0];
+    }
+
+    // Squawking 7500 (hijack), 7600 (radio failure), 7700 (general emergency), or 7777 (QRA
+    // intercept) takes priority for the scrollboard lock over plain proximity: if any such
+    // aircraft is within EMERGENCY_LOCK_RADIUS_NM, it's shown instead of whichever aircraft
+    // is nearest. With multiple simultaneous alerts, the closest one wins. Falls back to
+    // nearest-aircraft when there's no alert in range.
+    function findScrollboardTarget(acList) {
+      const validAc = (acList || []).filter(a => a.lat && a.lon);
+      if (validAc.length === 0) return null;
+
+      const emergencyAc = validAc.filter(a =>
+        isAlertSquawk(a) &&
+        calcDistanceNM(userConfig.lat, userConfig.lon, a.lat, a.lon) <= EMERGENCY_LOCK_RADIUS_NM
+      );
+
+      if (emergencyAc.length > 0) {
+        return [...emergencyAc].sort((a, b) =>
+          calcDistanceNM(userConfig.lat, userConfig.lon, a.lat, a.lon) -
+          calcDistanceNM(userConfig.lat, userConfig.lon, b.lat, b.lon)
+        )[0];
+      }
+
+      return findNearestAircraft(validAc);
+    }
+
+    // Shared photo lookup with a simple cache, used by both the scrollboard and the
+    // sidebar cards so a photo already fetched this session isn't re-requested every poll.
+    async function resolveAircraftPhoto(ac) {
+      const cacheKey = (ac.r && ac.r.trim()) || (ac.t && ac.t.trim()) || ac.hex;
+      if (cacheKey && photoCache[cacheKey] !== undefined) {
+        return photoCache[cacheKey];
+      }
+
+      let photoUrl = null;
+
+      if (ac.r && ac.r.trim() !== '') {
+        try {
+          const res = await fetch(`https://api.planespotters.net/pub/photos/reg/${encodeURIComponent(ac.r.trim())}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.photos && data.photos.length > 0) {
+              photoUrl = data.photos[0].thumbnail_large.src;
+            }
+          }
+        } catch (err) {}
+      }
+
+      if (!photoUrl && ac.t && ac.t.trim() !== '') {
+        try {
+          const res = await fetch(`https://api.planespotters.net/pub/photos/icaotype/${encodeURIComponent(ac.t.trim())}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.photos && data.photos.length > 0) {
+              photoUrl = data.photos[0].thumbnail_large.src;
+            }
+          }
+        } catch (err) {}
+      }
+
+      if (cacheKey) photoCache[cacheKey] = photoUrl;
+      return photoUrl;
+    }
+
+    // ---------------------------------------------------------------------
+    // Airline logo lookup: derived from the callsign's 3-letter ICAO airline prefix
+    // (e.g. "RYR123" -> "RYR" -> Ryanair). Logos are pulled from the Jxck-S/airline-logos
+    // GitHub repo (raw file hosting - each source folder keys its images by ICAO code,
+    // e.g. custom_logos/RYR.png). The repo doesn't publish a single pre-merged folder -
+    // that only exists as the local output of its combine.sh script - so this mirrors that
+    // script's own precedence order (custom_logos, then flightaware_logos, then
+    // radarbox_logos) by trying each source in turn and keeping the first that loads.
+    // Falls back to airhex's free small-logo endpoint for anything none of the three have.
+    // Cached per ICAO code so a repeat lock on the same airline doesn't re-probe every poll.
+    // ---------------------------------------------------------------------
+    const airlineLogoCache = {}; // icaoCode -> url string, or null for known-empty (no source has it)
+
+    function extractAirlineIcaoCode(flightStr) {
+      if (!flightStr) return null;
+      const cs = flightStr.trim().toUpperCase();
+      // Standard ICAO callsigns are a 3-letter airline code followed by a flight number,
+      // e.g. RYR123, BAW45A. Bare registrations (G-VBZZ) and tactical callsigns
+      // ("LEADER 4") won't match this and correctly resolve to null.
+      const match = cs.match(/^([A-Z]{3})\d/);
+      return match ? match[1] : null;
+    }
+
+    const AIRLINE_LOGOS_REPO_BASE = 'https://raw.githubusercontent.com/Jxck-S/airline-logos/main';
+    const airlineLogoRepoFolders = ['custom_logos', 'flightaware_logos', 'radarbox_logos'];
+
+    function airhexLogoUrl(icaoCode) {
+      return `https://content.airhex.com/content/logos/airlines_${icaoCode}_50_50_s.png?proportions=keep`;
+    }
+
+    // Resolves via <img> load/error rather than fetch(), since raw.githubusercontent.com
+    // doesn't need to be readable by JS - just displayable - and this sidesteps any CORS
+    // fuss entirely.
+    function probeImageUrl(url) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(url);
+        img.onerror = () => resolve(null);
+        img.src = url;
+      });
+    }
+
+    async function resolveAirlineLogoUrl(icaoCode) {
+      for (const folder of airlineLogoRepoFolders) {
+        const url = `${AIRLINE_LOGOS_REPO_BASE}/${folder}/${icaoCode}.png`;
+        const ok = await probeImageUrl(url);
+        if (ok) return ok;
+      }
+      // None of the three repo sources have this ICAO code - fall back to airhex.
+      const airhexUrl = airhexLogoUrl(icaoCode);
+      const ok = await probeImageUrl(airhexUrl);
+      return ok || null;
+    }
+
+    function initMap() {
+      map = L.map('map', {
+        zoomControl: false,
+        attributionControl: false,
+        dragging: false,
+        scrollWheelZoom: false,
+        doubleClickZoom: false,
+        boxZoom: false,
+        keyboard: false,
+        touchZoom: false,
+        tap: false
+      }).setView([userConfig.lat, userConfig.lon], 10);
+
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      const radiusMeters = userConfig.radiusNM * 1852;
+      radarCircle = L.circle([userConfig.lat, userConfig.lon], {
+        color: '#00ff66',
+        weight: 2,
+        opacity: 0.8,
+        fillColor: '#00ff66',
+        fillOpacity: 0.05,
+        radius: radiusMeters
+      }).addTo(map);
+
+      map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
+      recomputeMapProjectionCache();
+
+      refreshWeatherOverlay();
+      setInterval(refreshWeatherOverlay, WEATHER_REFRESH_MS);
+    }
+
+    // ---------------------------------------------------------------------
+    // Weather systems overlay: RainViewer's free public Weather Maps API (no key required -
+    // https://www.rainviewer.com/api.html). Fetches the latest available radar frame (data
+    // refreshes there every ~10 minutes) and lays it into the Leaflet map as a translucent
+    // tile layer, underneath the canvas scope so blips/labels/sweep always stay legible on
+    // top of it. The map div itself already renders at opacity 0.7 (see #map CSS), so this
+    // layer's own low opacity keeps precipitation as a soft backdrop rather than a solid overlay.
+    // ---------------------------------------------------------------------
+    const WEATHER_REFRESH_MS = 10 * 60 * 1000;
+    let weatherLayer = null;
+
+    async function refreshWeatherOverlay() {
+      if (!map) return;
+      try {
+        const res = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+        if (!res.ok) return;
+        const data = await res.json();
+        const frames = data && data.radar && data.radar.past;
+        if (!frames || !frames.length) return;
+        const latest = frames[frames.length - 1];
+        const tileUrl = `${data.host}${latest.path}/256/{z}/{x}/{y}/2/1_1.png`;
+
+        const newLayer = L.tileLayer(tileUrl, {
+          opacity: 0.35,
+          // RainViewer has progressively cut back the max zoom its free public radar tiles
+          // support (down to zoom 7 as of Jan 2026) - anything requested above that returns
+          // a "Zoom Level Not Supported" placeholder instead of real data. Capping
+          // maxNativeZoom at their limit tells Leaflet to fetch the zoom-7 tile and upscale
+          // ("overzoom") it to cover our actual (higher) map zoom, rather than requesting a
+          // zoom level that no longer exists - blockier, but it actually shows precipitation.
+          maxNativeZoom: 7,
+          zIndex: 5,
+          pane: 'tilePane'
+        });
+        newLayer.addTo(map);
+        const oldLayer = weatherLayer;
+        weatherLayer = newLayer;
+        // Swap after the new tiles are in so there's no flash of no-weather between frames.
+        newLayer.once('load', () => {
+          if (oldLayer) map.removeLayer(oldLayer);
+        });
+      } catch (err) {
+        console.debug('[weather] failed to refresh radar overlay -', err);
+      }
+    }
+
+    function resizeCanvas() {
+      if (!canvas) return;
+      const container = document.getElementById('radarContainer');
+      const rect = container.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      
+      if (map && radarCircle) {
+        map.invalidateSize();
+        map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
+      }
+
+      // The map's pixel<->latlng projection just changed (container size and/or the fitBounds
+      // above may shift it) - every cached screen point (scope centre/radius, each aircraft,
+      // each trail) is now stale and must be recomputed, or blips will drift from where the
+      // map itself is drawn until the next 12s poll happens to refresh them.
+      recomputeMapProjectionCache();
+      recomputeAircraftPixelCache();
+    }
+
+    // ---------------------------------------------------------------------
+    // Screen-point caching: map.latLngToContainerPoint() is a real (if small) chunk of work -
+    // reading the map's current projection/zoom/pixel-origin and doing the lat/lon -> pixel
+    // maths. The scope's lat/lon, radius, every aircraft, and every trail point only actually
+    // change when a new poll lands (every 12s) or the container is resized - never on a normal
+    // animation frame, since the map itself never pans or zooms (dragging/zoom are disabled).
+    // Recomputing all of that 60 times a second in drawRadarScope() was pure waste, and on
+    // slower hardware (e.g. a Raspberry Pi) that waste was enough to drag the actual frame
+    // rate down - which, since the old code advanced the sweep by a fixed amount per rendered
+    // frame, made the whole sweep visibly crawl. These caches (populated by
+    // recomputeMapProjectionCache/recomputeAircraftPixelCache, called only on poll/resize) let
+    // the render loop just read a pre-computed {x,y} instead of re-deriving it every frame.
+    // ---------------------------------------------------------------------
+    let cachedCenterPt = null;
+    let cachedMaxRadiusPx = 0;
+
+    function recomputeMapProjectionCache() {
+      if (!map) return;
+      cachedCenterPt = map.latLngToContainerPoint([userConfig.lat, userConfig.lon]);
+      const edgeLat = userConfig.lat + (userConfig.radiusNM / 60);
+      const edgePt = map.latLngToContainerPoint([edgeLat, userConfig.lon]);
+      cachedMaxRadiusPx = Math.abs(edgePt.y - cachedCenterPt.y);
+    }
+
+    // Recomputes the cached pixel point for every current aircraft and every trail point.
+    // Call this whenever liveAircraft/aircraftTrails changes (each poll, and each
+    // test-squawk/UFO injection) or whenever the projection itself changes (resize).
+    function recomputeAircraftPixelCache() {
+      if (!map) return;
+      liveAircraft.forEach(ac => {
+        if (ac.lat && ac.lon) {
+          ac.__pt = map.latLngToContainerPoint([ac.lat, ac.lon]);
+        }
+      });
+      Object.keys(aircraftTrails).forEach(hex => {
+        const trail = aircraftTrails[hex];
+        trail.__pts = trail.map(p => map.latLngToContainerPoint([p.lat, p.lon]));
+      });
+    }
+
+    function scheduleAircraftPoll(delay = AIRCRAFT_POLL_MS) {
+      clearTimeout(aircraftPollTimer);
+      aircraftPollTimer = setTimeout(fetchLiveFlights, Math.max(0, delay));
+    }
+
+    async function fetchLiveFlights() {
+      if (isFetching) {
+        scheduleAircraftPoll(AIRCRAFT_POLL_MS);
+        return;
+      }
+
+      const now = Date.now();
+      if (now < pollBackoffUntil) {
+        scheduleAircraftPoll(pollBackoffUntil - now);
+        return;
+      }
+
+      isFetching = true;
+      let nextPollDelay = AIRCRAFT_POLL_MS;
+
+      // airplanes.live's public /v2/point/ endpoint now requires a feeder-linked API key
+      // (returns 403 for unauthenticated requests) - dropped as a fallback.
+      //
+      // api.adsb.lol does not send Access-Control-Allow-Origin for browser requests from
+      // arbitrary origins, so a static page (this one, on GitHub Pages) can never read the
+      // response directly - no client-side header or fetch option can add a header the
+      // server itself doesn't send.
+      //
+      // WORKER_URL (declared at module scope, top of script) is the Node.js proxy hosted
+      // on Wispbyte (see server.js) that forwards this request to adsb.fi and adds the
+      // CORS header back - this is the reliable, owned fix.
+      //
+      // Until then (or if it ever goes down), allorigins.win is kept as a free
+      // third-party fallback proxy - no uptime guarantee, so it's listed second rather
+      // than relied on alone. (corsproxy.io was tried first but now requires a paid API
+      // key for anonymous use and started returning 401s.)
+      const FALLBACK_PROXY = 'https://api.allorigins.win/raw?url=';
+      const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
+      const endpoints = [
+        ...(WORKER_URL ? [`${WORKER_URL}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`] : []),
+        FALLBACK_PROXY + encodeURIComponent(adsbUrl)
+      ];
+      let success = false;
+      let sawRateLimit = false;
+
+      try {
+        for (let url of endpoints) {
+          try {
+            const response = await fetch(url, {
+              headers: { 'Accept': 'application/json' },
+              cache: 'no-store'
+            });
+            if (response.status === 429) {
+              sawRateLimit = true;
+              continue;
+            }
+            if (response.ok) {
+              const data = await response.json();
+              const aircrafts = data.ac || data.aircraft;
+              if (aircrafts) {
+                // Some feeds inject a synthetic "ground station" placeholder - hex all zeros,
+                // type "TWR" - representing the receiver's own site rather than an aircraft.
+                // Drop these before anything else, or they can end up "nearest" (distance ~0)
+                // and lock the scrollboard onto a fake target.
+                liveAircraft = aircrafts.filter(ac => !/^0+$/.test(ac.hex || '') && (ac.t || '').toUpperCase() !== 'TWR');
+
+                // Keep the injected test-squawk aircraft (see triggerTestSquawk) alive across
+                // polls until it expires, so a real fetch cycle doesn't wipe it out mid-test.
+                if (testAircraft) {
+                  if (Date.now() < testAircraftExpiryAt) {
+                    liveAircraft = liveAircraft.concat([testAircraft]);
+                  } else {
+                    testAircraft = null;
+                  }
+                }
+
+                // Same for the UFO easter egg (see triggerUfoSighting).
+                if (ufoAircraft) {
+                  if (Date.now() < ufoAircraftExpiryAt) {
+                    liveAircraft = liveAircraft.concat([ufoAircraft]);
+                  } else {
+                    ufoAircraft = null;
+                  }
+                }
+
+                const receivedAt = Date.now();
+                liveAircraft.forEach(ac => {
+                  if (!ac.hex || !ac.lat || !ac.lon) return;
+                  ac.__receivedAt = receivedAt;
+                  if (!aircraftFirstSeenAt[ac.hex]) aircraftFirstSeenAt[ac.hex] = receivedAt;
+                  if (!aircraftTrails[ac.hex]) aircraftTrails[ac.hex] = [];
+                  const t = aircraftTrails[ac.hex];
+                  const last = t[t.length - 1];
+                  if (!last || Math.abs(last.lat - ac.lat) > 0.0005 || Math.abs(last.lon - ac.lon) > 0.0005) {
+                    t.push({ lat: ac.lat, lon: ac.lon });
+                    if (t.length > 20) t.shift();
+                  }
+                });
+
+                // Refresh the cached screen points for the new aircraft list/trails now, once,
+                // rather than letting the render loop re-derive them on every frame - see
+                // recomputeAircraftPixelCache() above.
+                recomputeAircraftPixelCache();
+
+                // Route lookups only matter for whichever aircraft the scrollboard is locked
+                // onto (an in-range emergency squawk, or otherwise the nearest aircraft) -
+                // resolving the whole liveAircraft list every poll needlessly floods adsbdb/hexdb.
+                // fetchRoutesForAircraft() has its own 5-minute cache, so this does NOT hit the
+                // route APIs once per aircraft refresh.
+                const scrollboardTarget = findScrollboardTarget(liveAircraft);
+                if (scrollboardTarget) await fetchRoutesForAircraft([scrollboardTarget]);
+
+                updateUIState(true);
+                success = true;
+                break;
+              }
+            }
+          } catch (err) {
+            // A request blocked by the browser (e.g. adsb.lol omits CORS headers on its
+            // 429 responses, so a rate-limited request surfaces here as a generic "Failed
+            // to fetch" TypeError rather than a readable 429 status) looks identical to a
+            // genuine network error from here. Treat it the same as a rate limit so we
+            // back off instead of retrying every second and making the rate limiting worse.
+            sawRateLimit = true;
+          }
+        }
+
+        if (success) {
+          consecutive429s = 0;
+          pollBackoffUntil = 0;
+          nextPollDelay = AIRCRAFT_POLL_MS;
+        } else if (sawRateLimit) {
+          consecutive429s++;
+          // 15s, 30s, 60s, 120s, ... capped at 5 minutes.
+          // This prevents a 1-second poll loop from hammering the provider after a 429.
+          const backoffMs = Math.min(300000, 15000 * Math.pow(2, consecutive429s - 1));
+          pollBackoffUntil = Date.now() + backoffMs;
+          nextPollDelay = backoffMs;
+        } else {
+          // A transient network/API error should not blank the map. Keep the last successful
+          // aircraft state visible and try again on the normal 1-second cadence.
+          updateUIState(false);
+          nextPollDelay = AIRCRAFT_POLL_MS;
+        }
+      } finally {
+        isFetching = false;
+        scheduleAircraftPoll(nextPollDelay);
+      }
+    }
+
+    function updateUIState(isConnected) {
+      if (isConnected) {
+        renderFlightBoard(liveAircraft);
+        updateNearestScrollboard(liveAircraft);
+      }
+    }
+
+    function isMilitary(ac) {
+      const type = (ac.t || '').toUpperCase();
+      const flight = (ac.flight || '').toUpperCase();
+      const reg = (ac.r || '').toUpperCase();
+      const cat = (ac.category || '').toUpperCase();
+
+      // ADS-B emitter categories B0-B7 and C0-C3 cover non-aircraft: surface vehicles and
+      // fixed "point obstacle" beacons (commonly mounted on masts/towers, including at
+      // airports, for obstruction marking). These sometimes carry a government/military
+      // database flag - which previously tripped the dbFlags check below and got a fixed
+      // ground beacon rendered as a "military transponder". Exclude them outright first,
+      // since they're never aircraft regardless of any other flag.
+      if (/^[BC][0-7]$/.test(cat)) return false;
+
+      if (reg.startsWith('G-')) return false;
+
+      const civilExclusions = [
+        'MM16', 'B407', 'R22', 'R44', 'AS35', 'EC35', 'EC45', 'H125', 'H135', 
+        'B206', 'C172', 'PA28', 'SR20', 'SR22', 'C152', 'DA40', 'DA42', 'AS50'
+      ];
+      if (civilExclusions.some(ex => type.includes(ex))) return false;
+
+      const milTypes = [
+        'F16', 'F15', 'F18', 'F35', 'F22', 'EF20', 'EUFI', 'TYPH', 'TOR', 
+        'HAWK', 'A10', 'C130', 'C17', 'A400', 'K35R', 'E3TF', 'V22', 'CH47', 
+        'AH64', 'UH60', 'NH90', 'P8', 'RC135', 'KC135'
+      ];
+      if (milTypes.some(s => {
+        if (s === 'C17') return type === 'C17' || type === 'C-17';
+        return type.includes(s);
+      })) return true;
+
+      const milPrefixes = ['RRR', 'ASCOT', 'SHF', 'VORTEX', 'RCH', 'DUKE', 'BOOM', 'REACH', 'CNV', 'GUN', 'VIPER'];
+      if (milPrefixes.some(prefix => flight.startsWith(prefix))) return true;
+
+      const dbFlags = ac.dbFlags !== undefined ? ac.dbFlags : (ac.db_flags !== undefined ? ac.db_flags : 0);
+      if (dbFlags & 1) {
+        if (reg.startsWith('G-') || reg.startsWith('N')) return false;
+        return true;
+      }
+
+      if (cat === 'A7') return true;
+
+      return false;
+    }
+
+    function renderFlightBoard(acList) {
+      const gridEl = document.getElementById('aircraft-grid');
+      if (!gridEl) return;
+
+      const currentScroll = gridEl.scrollTop;
+      gridEl.innerHTML = '';
+
+      const militaryList = acList.filter(ac => isMilitary(ac));
+
+      if (!militaryList || militaryList.length === 0) {
+        gridEl.innerHTML = '<div style="color:var(--text-dim); font-size:0.75rem; padding: 0.5rem; text-align:center;">No active military transponders within 35 NM.</div>';
+        internalScrollPos = 0;
+        return;
+      }
+
+      militaryList.forEach((ac, index) => {
+        if (!ac.lat || !ac.lon) return;
+
+        announceMilitaryAircraft(ac);
+
+        const dist = calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
+        const cardId = `mil-card-${ac.hex}-${index}`;
+        const card = document.createElement('div');
+        card.className = 'ac-card';
+        card.innerHTML = `
+          <div class="ac-thumb" id="${cardId}-thumb">
+            <span style="font-size:0.55rem; color:var(--accent-military); font-weight:bold; text-align:center;">MIL</span>
+          </div>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-weight:bold; font-size:0.78rem; color:var(--accent-military); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 5px rgba(255,176,0,0.4);">${ac.flight ? ac.flight.trim() : ac.hex}</div>
+            <div style="font-size:0.65rem; color:var(--text-dim);">[${ac.t || 'MIL'}] • ${ac.gs || 0} kts</div>
+          </div>
+          <div style="text-align:right; flex-shrink: 0;">
+            <div style="font-weight:bold; color:var(--accent-green); font-size:0.78rem; text-shadow: 0 0 5px rgba(0,255,102,0.4);">${dist.toFixed(1)} NM</div>
+            <div style="font-size:0.65rem; color:var(--text-dim);">${ac.alt_baro || 'Ground'} ft</div>
+          </div>
+        `;
+        gridEl.appendChild(card);
+        fetchCardPhoto(ac, `${cardId}-thumb`);
+      });
+
+      gridEl.scrollTop = Math.min(currentScroll, gridEl.scrollHeight - gridEl.clientHeight);
+      internalScrollPos = gridEl.scrollTop;
+    }
+
+    async function fetchCardPhoto(ac, thumbId) {
+      const thumbEl = document.getElementById(thumbId);
+      if (!thumbEl) return;
+
+      const photoUrl = await resolveAircraftPhoto(ac);
+
+      // The card (and its id) may have been re-rendered away while the fetch was in flight
+      // (e.g. next poll cycle) - re-grab it rather than trust the closed-over reference.
+      const liveEl = document.getElementById(thumbId);
+      if (!liveEl) return;
+
+      if (photoUrl) {
+        liveEl.innerHTML = `<img src="${photoUrl}" alt="Military Aircraft Photo">`;
+      } else {
+        liveEl.innerHTML = `<span style="font-size:0.55rem; color:var(--accent-military); font-weight:bold; text-align:center;">MIL</span>`;
+      }
+    }
+
+    function processAutoScroll() {
+      const grid = document.getElementById('aircraft-grid');
+      if (!grid) return;
+
+      const maxScroll = grid.scrollHeight - grid.clientHeight;
+
+      if (maxScroll <= 0) {
+        internalScrollPos = 0;
+        grid.scrollTop = 0;
+        return;
+      }
+
+      if (scrollState === 'PAUSED_TOP') {
+        scrollTimer--;
+        if (scrollTimer <= 0) {
+          scrollState = 'SCROLLING';
+        }
+        return;
+      }
+
+      if (scrollState === 'PAUSED_BOTTOM') {
+        scrollTimer--;
+        if (scrollTimer <= 0) {
+          internalScrollPos = 0;
+          grid.scrollTop = 0;
+          scrollState = 'PAUSED_TOP';
+          scrollTimer = 120;
+        }
+        return;
+      }
+
+      internalScrollPos += 0.35;
+      grid.scrollTop = internalScrollPos;
+
+      if (grid.scrollTop >= maxScroll - 1 || internalScrollPos >= maxScroll) {
+        scrollState = 'PAUSED_BOTTOM';
+        scrollTimer = 120;
+        internalScrollPos = maxScroll;
+        grid.scrollTop = maxScroll;
+      }
+    }
+
+    // Manual overrides for specific airframes, keyed by registration (ac.r), trimmed +
+    // uppercased - e.g. police/agency aircraft with no real airline code, or the UFO easter
+    // egg below. `logo` replaces the normal ICAO-callsign-prefix airline lookup with a plain
+    // text/colour badge (shown regardless of civil/military classification); `route` replaces
+    // the resolved/estimated From-To with fixed text instead of airport codes.
+    const REGISTRATION_OVERRIDES = {
+      'UKP154': {
+        logo: { text: 'POLICE', bg: '#ffffff', textColor: '#0a3fd9' },
+        route: { from: 'Fighting crime', to: 'Finding criminals' }
+      },
+      'UFO1': {
+        logo: { text: 'UFO', bg: '#000000', textColor: '#00ff66' }
+      }
+    };
+
+    async function fetchAircraftPhoto(ac, isMil) {
+      const logoBox = document.getElementById('sb-logo-box');
+
+      // Build the two-slot layout up front (airline badge + aircraft photo) so both can
+      // populate independently and asynchronously without clobbering each other.
+      logoBox.innerHTML = `
+        <div class="photo-row">
+          <div class="airline-logo-thumb" id="sb-airline-logo" style="display:none;"></div>
+          <div class="aircraft-photo-thumb" id="sb-aircraft-photo">
+            <span class="logo-fallback" id="sb-logo-text">${isMil ? 'MILITARY' : '--'}</span>
+          </div>
+        </div>
+      `;
+
+      const regOverride = REGISTRATION_OVERRIDES[(ac.r || '').trim().toUpperCase()];
+
+      if (regOverride && regOverride.logo) {
+        const overrideEl = document.getElementById('sb-airline-logo');
+        if (overrideEl) {
+          overrideEl.style.background = regOverride.logo.bg;
+          overrideEl.innerHTML = `<span style="font-weight:800; font-size:0.7rem; letter-spacing:0.04em; text-transform:uppercase; color:${regOverride.logo.textColor};">${regOverride.logo.text}</span>`;
+          overrideEl.style.display = 'flex';
+        }
+      }
+      // Airline logo - civil flights only, derived from the callsign's ICAO airline prefix.
+      // Skipped entirely when a registration override above already set the badge.
+      else if (!isMil) {
+        const callsign = ac.flight ? ac.flight.trim() : '';
+        const icaoCode = extractAirlineIcaoCode(callsign);
+        if (icaoCode) {
+          if (airlineLogoCache[icaoCode] === undefined) {
+            // Not resolved yet this session - probe the repo sources (then airhex) in the
+            // background and populate once we know. Mark as "in flight" so a rapid string
+            // of polls for the same airline doesn't kick off duplicate probes.
+            airlineLogoCache[icaoCode] = null;
+            resolveAirlineLogoUrl(icaoCode).then((url) => {
+              airlineLogoCache[icaoCode] = url;
+              // Only touch the DOM if the scrollboard is still locked on this same airline -
+              // otherwise this stale resolution would clobber whatever's shown now.
+              const stillRelevant = lockedAircraft && !isMilitary(lockedAircraft) &&
+                extractAirlineIcaoCode(lockedAircraft.flight ? lockedAircraft.flight.trim() : '') === icaoCode;
+              if (url && stillRelevant) {
+                const liveLogoEl = document.getElementById('sb-airline-logo');
+                if (liveLogoEl) {
+                  liveLogoEl.innerHTML = `<img src="${url}" alt="${icaoCode} logo">`;
+                  liveLogoEl.style.display = 'flex';
+                }
+              }
+            });
+          } else if (airlineLogoCache[icaoCode]) {
+            const logoEl = document.getElementById('sb-airline-logo');
+            if (logoEl) {
+              logoEl.innerHTML = `<img src="${airlineLogoCache[icaoCode]}" alt="${icaoCode} logo">`;
+              logoEl.style.display = 'flex';
+            }
+          }
+        }
+      }
+
+      const photoUrl = await resolveAircraftPhoto(ac);
+      const photoEl = document.getElementById('sb-aircraft-photo');
+      if (!photoEl) return; // scrollboard may have re-rendered away while the fetch was in flight
+
+      if (photoUrl) {
+        photoEl.innerHTML = `<img src="${photoUrl}" alt="Aircraft Photo">`;
+      } else if (isMil) {
+        photoEl.innerHTML = `<span class="logo-fallback" style="color: var(--accent-military);">MIL AC</span>`;
+      } else {
+        photoEl.innerHTML = `<span class="logo-fallback">${ac.t || 'CIVIL'}</span>`;
+      }
+    }
+
+    function updateNearestScrollboard(acList) {
+      if (!acList || acList.length === 0) return;
+      lockedAircraft = findScrollboardTarget(acList);
+      if (!lockedAircraft) return;
+
+      const dist = calcDistanceNM(userConfig.lat, userConfig.lon, lockedAircraft.lat, lockedAircraft.lon);
+      const bearing = calcBearing(userConfig.lat, userConfig.lon, lockedAircraft.lat, lockedAircraft.lon);
+      const flightStr = lockedAircraft.flight ? lockedAircraft.flight.trim() : `ICAO: ${lockedAircraft.hex}`;
+      const isAlertLock = isAlertSquawk(lockedAircraft);
+      const isQraLock = lockedAircraft.squawk === QRA_SQUAWK;
+
+      // Sound/flash once per aircraft the first time it takes an alert lock, not on
+      // every 12s poll while it's still squawking - otherwise this fires continuously for
+      // as long as the emergency/QRA lasts.
+      if (isAlertLock && !announcedEmergencyHexes.has(lockedAircraft.hex)) {
+        announcedEmergencyHexes.add(lockedAircraft.hex);
+        const emergencyAc = lockedAircraft;
+        const sirenMs = playEmergencySiren();
+        triggerRedPulse();
+        // Let the siren play out before the spoken callout so they don't talk over each other.
+        setTimeout(() => announceEmergencySquawk(emergencyAc), Math.max(300, sirenMs));
+      }
+
+      fetchAircraftPhoto(lockedAircraft, isMilitary(lockedAircraft));
+
+      const speedKts = lockedAircraft.gs !== undefined ? Math.round(lockedAircraft.gs) : 0;
+      const speedMph = Math.round(speedKts * 1.15078);
+
+      document.getElementById('sb-distance').innerText = `${dist.toFixed(1)} NM`;
+      document.getElementById('sb-alt').innerText = `Alt: ${lockedAircraft.alt_baro || 'Ground'} ft`;
+      document.getElementById('sb-speed').innerText = `Spd: ${speedKts} kts (${speedMph} mph)`;
+
+      const airlineEl = document.getElementById('sb-airline');
+      const planeLabel = lockedAircraft.flight ? lockedAircraft.flight.trim() : lockedAircraft.hex;
+      if (isQraLock) {
+        // 7777 isn't a distress code - label it ALERT (amber, matching the app's existing
+        // military color) rather than EMERGENCY (red).
+        airlineEl.innerText = `⚠ ALERT-${planeLabel}-${lockedAircraft.squawk}`;
+        airlineEl.style.color = 'var(--accent-military)';
+        airlineEl.style.textShadow = '0 0 10px rgba(255,176,0,0.5)';
+      } else if (isAlertLock) {
+        airlineEl.innerText = `⚠ EMERGENCY-${planeLabel}-${lockedAircraft.squawk}`;
+        airlineEl.style.color = 'var(--accent-red)';
+        airlineEl.style.textShadow = '0 0 10px rgba(255,51,51,0.6)';
+      } else {
+        airlineEl.innerText = flightStr;
+        airlineEl.style.color = 'var(--accent-green)';
+        airlineEl.style.textShadow = '0 0 8px rgba(0,255,102,0.4)';
+      }
+
+      document.getElementById('sb-type').innerText = `Type: ${lockedAircraft.t || 'Aircraft'}`;
+
+      const heading = lockedAircraft.track !== undefined ? Math.round(lockedAircraft.track) : '--';
+      document.getElementById('sb-heading').innerText = `Hdng: ${heading}°`;
+      document.getElementById('sb-bearing').innerText = `Bearing: ${bearing}°`;
+
+      const vertRate = lockedAircraft.baro_rate !== undefined ? lockedAircraft.baro_rate : 0;
+      const rateEl = document.getElementById('sb-rate');
+      if (vertRate > 30) {
+        rateEl.innerHTML = `<span style="color: var(--accent-green); text-shadow: 0 0 6px rgba(0,255,102,0.4);">▲ +${vertRate} ft/m</span>`;
+      } else if (vertRate < -30) {
+        rateEl.innerHTML = `<span style="color: var(--accent-red); text-shadow: 0 0 6px rgba(255,51,51,0.4);">▼ ${vertRate} ft/m</span>`;
+      } else {
+        rateEl.innerHTML = `<span style="color: var(--text-dim);">— Level Flight</span>`;
+      }
+
+      const routeContainer = document.getElementById('sb-route-container');
+      const tagEl = document.getElementById('sb-route-tag');
+      const routeOverride = REGISTRATION_OVERRIDES[(lockedAircraft.r || '').trim().toUpperCase()];
+
+      if (routeOverride && routeOverride.route) {
+        // Fixed flavour text instead of a real route - not "estimated" (that styling/tag means
+        // "we tried to resolve a real route and couldn't"), just its own permanent from/to.
+        routeContainer.classList.remove('route-estimated');
+        document.getElementById('sb-from').innerHTML = `<b>${routeOverride.route.from}</b>`;
+        document.getElementById('sb-to').innerHTML = `<b>${routeOverride.route.to}</b>`;
+        tagEl.style.display = 'none';
+      } else {
+        // Only display routes returned by an API and accepted by validation. Never invent a
+        // destination from callsign prefixes or heading.
+        const route = resolveFlightRoute(flightStr, lockedAircraft);
+        routeContainer.classList.remove('route-estimated');
+
+        if (!route) {
+          document.getElementById('sb-from').innerHTML = '<b>UNKNOWN</b> — <span style="color:var(--text-dim);">No verified route</span>';
+          document.getElementById('sb-to').innerHTML = '<b>UNKNOWN</b> — <span style="color:var(--text-dim);">No verified destination</span>';
+          tagEl.style.display = 'inline-block';
+          tagEl.className = 'route-source-tag estimated';
+          tagEl.innerText = 'NO DATA';
+          tagEl.title = 'No route from the available route APIs';
+          document.getElementById('sb-eta').innerText = 'ETA: --';
+        } else {
+          document.getElementById('sb-from').innerHTML =
+            `<b>${route.fromCode}</b> — <span style="color:var(--text-dim);">${route.fromName || airportName(route.fromCode) || 'Aerodrome'}</span>`;
+          document.getElementById('sb-to').innerHTML =
+            `<b>${route.toCode}</b> — <span style="color:var(--text-dim);">${route.toName || airportName(route.toCode) || 'Aerodrome'}</span>`;
+          tagEl.style.display = 'inline-block';
+          tagEl.className = 'route-source-tag confirmed';
+          tagEl.innerText = route.source === 'hexdb' ? 'HEXDB' : 'CONFIRMED';
+          tagEl.title = `Verified route data from ${route.source}`;
+          document.getElementById('sb-eta').innerText = `ETA: ${computeEtaText(lockedAircraft, route)}`;
+        }      }
+    }
+
+    let sweepAngle = 0;
+    // One full sweep rotation takes ~7s of real time. Previously this was advanced by a fixed
+    // 0.015rad on every executed animation frame, which meant the sweep's actual on-screen
+    // speed was tied to whatever frame rate the device happened to achieve - on a Raspberry
+    // Pi (or any device that can't sustain 60fps), fewer executed frames per second meant a
+    // visibly slower sweep, independent of anything actually being "wrong". Advancing by
+    // elapsed wall-clock time instead (see drawRadarScope) keeps the sweep's real-world speed
+    // constant no matter how many frames the device manages to render.
+    const SWEEP_RATE_RAD_PER_SEC = 0.9;
+    // One full sweep rotation (2π at the rate above, ~7s) - fade every non-locked blip out
+    // over roughly that long, down to a dim floor rather than to nothing, so the scope still
+    // reads at a glance between sweep passes.
+    const SWEEP_FADE_MS = 7000;
+    const SWEEP_FADE_MIN_ALPHA = 0.35;
+
+    // Soft render-rate cap: redrawing the full canvas (rings, sweep, every aircraft
+    // silhouette + label) at an uncapped 60fps is more work than a Raspberry Pi's GPU/canvas
+    // path can comfortably sustain. 30fps is still smooth for a slow-moving radar sweep and
+    // roughly halves the per-second drawing cost; because the sweep/fade maths above are now
+    // time-based rather than frame-count-based, capping the render rate changes nothing about
+    // how fast anything visually moves - only how often the canvas is repainted.
+    const MIN_FRAME_INTERVAL_MS = 1000 / 30;
+    let lastRenderTimestamp = null;
+
+    function drawRadarScope(timestamp) {
+      requestAnimationFrame(drawRadarScope);
+
+      if (lastRenderTimestamp === null) lastRenderTimestamp = timestamp;
+      const elapsedMs = timestamp - lastRenderTimestamp;
+      if (elapsedMs < MIN_FRAME_INTERVAL_MS) return;
+      // Clamp so returning from a backgrounded/minimised tab (which can pause rAF for a long
+      // time) doesn't spin the sweep angle through several full rotations to "catch up".
+      const dtMs = Math.min(200, elapsedMs);
+      lastRenderTimestamp = timestamp;
+
+      if (!ctx || !canvas || !map || !cachedCenterPt) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      processAutoScroll();
+
+      // Cached once per poll/resize rather than re-derived from the map every frame - see
+      // recomputeMapProjectionCache().
+      const centerPt = cachedCenterPt;
+      const maxRadiusPx = cachedMaxRadiusPx;
+
+      ctx.shadowColor = '#00ff66';
+      ctx.shadowBlur = 8;
+
+      ctx.strokeStyle = 'rgba(0, 255, 102, 0.35)';
+      ctx.lineWidth = 1;
+      [0.25, 0.5, 0.75, 1.0].forEach((factor) => {
+        const r = maxRadiusPx * factor;
+        ctx.beginPath();
+        ctx.arc(centerPt.x, centerPt.y, r, 0, 2 * Math.PI);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(0, 255, 102, 0.8)';
+        ctx.font = '9px system-ui';
+        ctx.fillText(`${(userConfig.radiusNM * factor).toFixed(0)} NM`, centerPt.x + 4, centerPt.y - r + 10);
+      });
+
+      ctx.beginPath();
+      ctx.moveTo(centerPt.x - maxRadiusPx, centerPt.y);
+      ctx.lineTo(centerPt.x + maxRadiusPx, centerPt.y);
+      ctx.moveTo(centerPt.x, centerPt.y - maxRadiusPx);
+      ctx.lineTo(centerPt.x, centerPt.y + maxRadiusPx);
+      ctx.strokeStyle = 'rgba(0, 255, 102, 0.25)';
+      ctx.stroke();
+
+      ctx.fillStyle = '#00ff66';
+      ctx.font = 'bold 11px system-ui';
+      ctx.fillText('N', centerPt.x - 4, centerPt.y - maxRadiusPx - 5);
+      ctx.fillText('S', centerPt.x - 4, centerPt.y + maxRadiusPx + 15);
+      ctx.fillText('E', centerPt.x + maxRadiusPx + 5, centerPt.y + 4);
+      ctx.fillText('W', centerPt.x - maxRadiusPx - 18, centerPt.y + 4);
+
+      sweepAngle += SWEEP_RATE_RAD_PER_SEC * (dtMs / 1000);
+      if (sweepAngle > 2 * Math.PI) sweepAngle -= 2 * Math.PI; // keep it bounded, doesn't affect the maths below either way
+
+      // shadowBlur is one of the more expensive canvas operations, especially on a Pi's
+      // software/GPU-lite rendering path, and it was previously left "on" (inherited from
+      // the scope rings above) for every subsequent stroke/fill this frame - including the
+      // 15-segment sweep trail and, worse, every aircraft's silhouette + label, every frame.
+      // Turn it off before that bulk per-aircraft work; it gets switched back on only for the
+      // few individual draws below that actually want a glow (the sweep beam itself, and the
+      // locked-aircraft pulse ring).
+      ctx.shadowBlur = 0;
+
+      // Sweep trail: drawn as one multi-segment path instead of 15 separate stroke() calls -
+      // same look (each segment still gets its own fading alpha via a per-segment gradient
+      // isn't worth the complexity here, so we approximate with one mid-alpha stroke per
+      // segment) but far fewer draw-call round trips into the canvas backend.
+      for (let i = 0; i < 15; i++) {
+        const trailAngle = sweepAngle - (i * 0.012);
+        const trailX = centerPt.x + Math.cos(trailAngle) * maxRadiusPx;
+        const trailY = centerPt.y + Math.sin(trailAngle) * maxRadiusPx;
+
+        ctx.beginPath();
+        ctx.moveTo(centerPt.x, centerPt.y);
+        ctx.lineTo(trailX, trailY);
+        ctx.strokeStyle = `rgba(0, 255, 102, ${0.12 * (1 - i / 15)})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      const sweepX = centerPt.x + Math.cos(sweepAngle) * maxRadiusPx;
+      const sweepY = centerPt.y + Math.sin(sweepAngle) * maxRadiusPx;
+      ctx.shadowColor = '#00ff66';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(centerPt.x, centerPt.y);
+      ctx.lineTo(sweepX, sweepY);
+      ctx.strokeStyle = 'rgba(0, 255, 102, 0.9)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      Object.keys(aircraftTrails).forEach(hex => {
+        const trail = aircraftTrails[hex];
+        const pts = trail.__pts;
+        if (pts && pts.length > 1) {
+          ctx.beginPath();
+          for (let i = 0; i < pts.length; i++) {
+            if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
+            else ctx.lineTo(pts[i].x, pts[i].y);
+          }
+          ctx.strokeStyle = 'rgba(0, 191, 255, 0.3)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      });
+
+      if (liveAircraft && liveAircraft.length > 0) {
+        // Label boxes placed so far this frame, so overlapping callsigns can be nudged
+        // apart instead of stacking illegibly on top of each other - see the collision
+        // step just before each label is drawn, below.
+        const placedLabelBoxes = [];
+        liveAircraft.forEach(ac => {
+          if (!ac.lat || !ac.lon || !ac.__pt) return;
+
+          // Cached once per poll/resize instead of re-derived from the map every frame -
+          // see recomputeAircraftPixelCache().
+          const pt = ac.__pt;
+          const isMil = isMilitary(ac);
+          const isEmg = ac.squawk === '7500' || ac.squawk === '7600' || ac.squawk === '7700';
+          const isQra = ac.squawk === QRA_SQUAWK;
+          const isLocked = lockedAircraft && lockedAircraft.hex === ac.hex;
+
+          // CRT-style sweep fade: everything except the locked aircraft brightens when the
+          // sweep beam passes its bearing, then dims until the next pass comes back around
+          // (one full rotation later) rather than staying uniformly lit the whole time.
+          const blipAngle = Math.atan2(pt.y - centerPt.y, pt.x - centerPt.x);
+          const angDiff = Math.abs(((sweepAngle - blipAngle + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI);
+          if (ac.hex && angDiff < 0.02) aircraftLastSweepHit[ac.hex] = Date.now();
+          let fadeAlpha = 1;
+          if (!isLocked && ac.hex) {
+            if (aircraftLastSweepHit[ac.hex] === undefined) aircraftLastSweepHit[ac.hex] = Date.now();
+            const elapsed = Date.now() - aircraftLastSweepHit[ac.hex];
+            const t = Math.min(1, elapsed / SWEEP_FADE_MS);
+            fadeAlpha = 1 - t * (1 - SWEEP_FADE_MIN_ALPHA);
+          }
+
+          ctx.save();
+          ctx.globalAlpha = fadeAlpha;
+
+          if (isLocked) {
+            const pulseRadius = 12 + Math.sin(Date.now() / 150) * 3;
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, pulseRadius, 0, 2 * Math.PI);
+            ctx.strokeStyle = '#ff3333';
+            ctx.lineWidth = 2;
+            ctx.shadowColor = '#ff3333';
+            ctx.shadowBlur = 10;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+          }
+
+          if (ac.track !== undefined) {
+            const trackRad = (ac.track - 90) * (Math.PI / 180);
+            const lineLen = 16;
+            const endX = pt.x + Math.cos(trackRad) * lineLen;
+            const endY = pt.y + Math.sin(trackRad) * lineLen;
+            ctx.beginPath();
+            ctx.moveTo(pt.x, pt.y);
+            ctx.lineTo(endX, endY);
+            ctx.strokeStyle = isMil ? '#ffb000' : '#00bfff';
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+          }
+
+          const heading = ac.track !== undefined ? ac.track : 0;
+          // Altitude-banded colour for routine traffic; emergency/military/QRA still win out
+          // over altitude so those states are never ambiguous with a colour band - see
+          // altitudeColor() and ALTITUDE_BANDS above.
+          const silColor = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : altitudeColor(ac.alt_baro));
+
+          // Silhouette is always drawn at full brightness - only the label fades with the
+          // sweep, so the aircraft shape itself stays clearly visible between sweep passes.
+          ctx.globalAlpha = 1;
+
+          // Local spritesheet lookup - specific type designator first, falling back to the
+          // aircraft's ADS-B category's generic silhouette. Draws nothing (beyond the label)
+          // if neither is covered - see drawPwSilhouette/resolvePwSpriteKey above.
+          drawPwSilhouette(ctx, ac, pt, heading, silColor);
+
+          ctx.globalAlpha = fadeAlpha;
+          ctx.font = 'bold 9px system-ui';
+          const label = ac.flight ? ac.flight.trim() : ac.hex;
+          const altText = ac.alt_baro ? ` FL${Math.round(ac.alt_baro / 100)}` : '';
+          const labelText = `${label}${altText}`;
+
+          const labelMetrics = ctx.measureText(labelText);
+          const labelPadX = 2;
+          const labelPadY = 1;
+          const labelBoxW = labelMetrics.width + labelPadX * 2;
+          const labelBoxH = 9 + labelPadY * 2;
+          let labelBoxX = pt.x + 7 - labelPadX;
+          let labelBoxY = pt.y + 3 - 7 - labelPadY;
+
+          // Nudge this label down, a row at a time, until it clears every box already
+          // placed this frame - so two aircraft close together on screen get readable,
+          // stacked labels instead of one illegible overlapping blob. Capped at 24 tries
+          // (a tall stack of coincident blips) so this can never hang the render loop.
+          const labelBoxGap = 2;
+          for (let attempt = 0; attempt < 24; attempt++) {
+            const collidesWith = placedLabelBoxes.find(box =>
+              labelBoxX < box.x + box.w &&
+              labelBoxX + labelBoxW > box.x &&
+              labelBoxY < box.y + box.h &&
+              labelBoxY + labelBoxH > box.y
+            );
+            if (!collidesWith) break;
+            labelBoxY = collidesWith.y + collidesWith.h + labelBoxGap;
+          }
+          placedLabelBoxes.push({ x: labelBoxX, y: labelBoxY, w: labelBoxW, h: labelBoxH });
+
+          // Faded white backing box behind the callsign/altitude label so it stays readable
+          // against the scope regardless of what colour/brightness is under it (trails, sweep
+          // glow, other blips).
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.fillRect(labelBoxX, labelBoxY, labelBoxW, labelBoxH);
+
+          ctx.fillStyle = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : '#8b4513');
+          ctx.fillText(labelText, labelBoxX + labelPadX, labelBoxY + labelBoxH - labelPadY - 2);
+
+          ctx.restore(); // matches the fadeAlpha save() above
+        });
+      }
+    }
+
+    document.getElementById('start-overlay').addEventListener('click', startFeed);
+    document.getElementById('start-overlay').addEventListener('touchstart', startFeed);
+  </script>
+</body>
+</html>
