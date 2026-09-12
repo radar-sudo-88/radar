@@ -1137,6 +1137,67 @@
       return true;
     }
 
+    // ADSB.lol's routeset endpoint is especially useful for callsigns such as
+    // SHT4YL (British Airways Shuttle) and TOM5MH (TUI), where the transponder
+    // callsign does not necessarily contain the commercial flight number.
+    // It accepts the live aircraft position as well as the callsign and returns
+    // a current route candidate when its route database can resolve it.
+    async function queryAdsbLolRoute(ac) {
+      const callsign = (ac && ac.flight || '').trim().toUpperCase();
+      if (!callsign || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return null;
+      try {
+        const res = await fetch('https://api.adsb.lol/api/0/routeset', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          cache: 'no-store',
+          body: JSON.stringify({ planes: [{ callsign, lat: Number(ac.lat), lng: Number(ac.lon) }] })
+        });
+        if (res.status === 429) return undefined;
+        if (!res.ok) return null;
+        const data = await res.json();
+        const row = Array.isArray(data) ? data.find(r => String(r && r.callsign || '').toUpperCase() === callsign) || data[0] : null;
+        if (!row) return null;
+
+        // A false 'plausible' flag means the route database could not reconcile
+        // the route with the supplied live position. Do not display it as verified.
+        if (row.plausible === false || row.plausible === 0 || row.plausible === '0') return null;
+
+        const airports = Array.isArray(row._airports) ? row._airports : [];
+        const routeIata = String(row._airport_codes_iata || '').toUpperCase().split('-').filter(Boolean);
+        const routeIcao = String(row.airport_codes || '').toUpperCase().split('-').filter(Boolean);
+        if (routeIata.length < 2 && routeIcao.length < 2) return null;
+
+        // routeset can return a multi-leg chain (e.g. DEN-SAN-SFO). For the
+        // current flight, use the first and last airport in that chain.
+        const fromCode = routeIata.length >= 2 ? routeIata[0] : routeIcao[0];
+        const toCode = routeIata.length >= 2 ? routeIata[routeIata.length - 1] : routeIcao[routeIcao.length - 1];
+        if (!validAirportCode(fromCode) || !validAirportCode(toCode) || fromCode === toCode) return null;
+
+        const airportForCode = (code) => {
+          const found = airports.find(a => String(a && (a.iata || '')).toUpperCase() === code || String(a && (a.icao || '')).toUpperCase() === code);
+          if (found) return found;
+          const db = airportDatabase[String(code).toUpperCase()];
+          return db ? { name: db.name, lat: db.lat, lon: db.lon, iata: code } : null;
+        };
+        const from = airportForCode(fromCode);
+        const to = airportForCode(toCode);
+
+        return normaliseRoute({
+          fromCode,
+          toCode,
+          fromName: from ? (from.name || from.location || '') : '',
+          toName: to ? (to.name || to.location || '') : '',
+          fromLat: from && Number(from.lat),
+          fromLon: from && Number(from.lon),
+          toLat: to && Number(to.lat),
+          toLon: to && Number(to.lon)
+        }, 'adsb.lol');
+      } catch (err) {
+        console.warn('[ROUTE] ADSB.lOL routeset lookup failed:', err);
+        return null;
+      }
+    }
+
     async function queryAdsbdb(callsign) {
       if (Date.now() < adsbdbBackoffUntil) return undefined;
       try {
@@ -1189,7 +1250,19 @@
       const cached = routeCache[key];
       if (cached && now - cached.checkedAt < ROUTE_CACHE_TTL_MS) return;
 
-      let result = await queryAdsbdb(callsign);
+      // Try the live position-aware routeset first. This is the key fix for
+      // non-standard airline callsigns such as SHT4YL and TOM5MH.
+      let result = await queryAdsbLolRoute(ac);
+      if (result === undefined) {
+        // Keep going to the other providers if routeset is temporarily rate-limited.
+        result = null;
+      }
+      if (result && !routePassesPositionCheck(result, ac)) {
+        console.warn('[ROUTE] rejected ADSB.lol route after validation', callsign, result);
+        result = null;
+      }
+
+      if (!result) result = await queryAdsbdb(callsign);
       if (result === undefined) return;
       if (result && !routePassesPositionCheck(result, ac)) {
         console.warn('[ROUTE] rejected ADSBDB route after validation', callsign, result);
