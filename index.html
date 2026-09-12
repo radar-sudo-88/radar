@@ -1444,7 +1444,17 @@
         });
         if (res.status === 429) return undefined;
         if (!res.ok) return null;
-        const data = await res.json();
+        let data;
+        try {
+          data = await res.json();
+        } catch (parseErr) {
+          // Belt-and-braces: the proxy already turns an empty/malformed
+          // upstream body into a non-ok status, but if that ever slips
+          // through, fall back the same way a non-ok response would rather
+          // than throwing out of this whole try block.
+          console.warn('[ROUTE] ADSB.lol routeset returned unparseable JSON, falling back:', parseErr);
+          return null;
+        }
         const row = Array.isArray(data) ? data.find(r => String(r && r.callsign || '').toUpperCase() === callsign) || data[0] : null;
         if (!row) return null;
 
