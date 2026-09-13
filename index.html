@@ -1460,10 +1460,22 @@
           res = attempt;
           break;
         } catch (fetchErr) {
-          if (i === proxyBases.length - 1) throw fetchErr; // out of proxies to try
+          if (i === proxyBases.length - 1) {
+            // Out of proxies to try - both backup and primary are unreachable
+            // right now. Return null (not throw) so the caller's fallback
+            // chain (adsbdb -> hexdb) still runs instead of the whole route
+            // lookup aborting here.
+            console.warn('[ROUTE] Both ADSB.lol proxies unreachable, falling back:', fetchErr);
+            return null;
+          }
           // otherwise fall through to the next proxyBases entry
         }
       }
+
+      // Defensive - every exit path above either sets res or returns early,
+      // but if that ever changes, fail closed (fall through) rather than
+      // crash on res.status below.
+      if (!res) return null;
 
       try {
         if (res.status === 429) return undefined;
