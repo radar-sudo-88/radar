@@ -1433,12 +1433,13 @@
       const callsign = (ac && ac.flight || '').trim().toUpperCase();
       if (!callsign || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return null;
       const routesetBody = JSON.stringify({ planes: [{ callsign, lat: Number(ac.lat), lng: Number(ac.lon) }] });
-      // Same primary -> backup -> (no third-party fallback exists for this POST
-      // endpoint) order as the point-lookup endpoints array below. Only moves on
-      // to the backup on a network-level failure or 5xx from the primary - a
-      // 429 or a normal "no route found" response is a real answer from a
+      // Backup -> primary -> (no third-party fallback exists for this POST
+      // endpoint) order, matching the point-lookup endpoints array below -
+      // the primary Wispbyte server is currently down, so backup goes first.
+      // Only moves on to the next proxy on a network-level failure or 5xx -
+      // a 429 or a normal "no route found" response is a real answer from a
       // reachable proxy, not a reason to retry against a different one.
-      const proxyBases = [WORKER_URL, WORKER_URL_BACKUP].filter(Boolean);
+      const proxyBases = [WORKER_URL_BACKUP, WORKER_URL].filter(Boolean);
       let res = null;
       for (let i = 0; i < proxyBases.length; i++) {
         try {
@@ -2142,8 +2143,8 @@
       const FALLBACK_PROXY = 'https://api.allorigins.win/raw?url=';
       const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
       const endpoints = [
-        ...(WORKER_URL ? [`${WORKER_URL}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`] : []),
         ...(WORKER_URL_BACKUP ? [`${WORKER_URL_BACKUP}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`] : []),
+        ...(WORKER_URL ? [`${WORKER_URL}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`] : []),
         FALLBACK_PROXY + encodeURIComponent(adsbUrl)
       ];
       let success = false;
