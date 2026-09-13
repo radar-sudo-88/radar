@@ -773,6 +773,10 @@
     // arbitrary origins. Shared at module scope since both fetchLiveFlights()
     // and queryAdsbLolRoute() need it.
     const WORKER_URL = 'https://cors-proxy-radar.wisp.uno';
+    // Second Wispbyte instance, tried if the primary proxy above is
+    // unreachable/errors, before falling back further to the third-party
+    // allorigins.win proxy (see the endpoints array below).
+    const WORKER_URL_BACKUP = 'https://cors-proxy-backup.wisp.uno';
     const ROUTESET_PATH = '/api/0/routeset';
     const userConfig = { lat: 52.9529, lon: -0.9547, radiusNM: 35 };
 
@@ -1428,20 +1432,39 @@
     async function queryAdsbLolRoute(ac) {
       const callsign = (ac && ac.flight || '').trim().toUpperCase();
       if (!callsign || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return null;
+      const routesetBody = JSON.stringify({ planes: [{ callsign, lat: Number(ac.lat), lng: Number(ac.lon) }] });
+      // Same primary -> backup -> (no third-party fallback exists for this POST
+      // endpoint) order as the point-lookup endpoints array below. Only moves on
+      // to the backup on a network-level failure or 5xx from the primary - a
+      // 429 or a normal "no route found" response is a real answer from a
+      // reachable proxy, not a reason to retry against a different one.
+      const proxyBases = [WORKER_URL, WORKER_URL_BACKUP].filter(Boolean);
+      let res = null;
+      for (let i = 0; i < proxyBases.length; i++) {
+        try {
+          // api.adsb.lol doesn't send Access-Control-Allow-Origin for browser requests
+          // from arbitrary origins either, so this goes through the same Wispbyte proxy
+          // as the point lookups above (see server.js) rather than hitting adsb.lol
+          // directly. Note: adsb.lol is known to 403 datacenter/cloud IPs, which is what
+          // this proxy's own outbound requests look like to it - if that happens here,
+          // this call fails gracefully (falls through to queryAdsbdb/queryHexdb below)
+          // rather than breaking anything.
+          const attempt = await fetch(`${proxyBases[i]}${ROUTESET_PATH}`, {
+            method: 'POST',
+            headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: routesetBody
+          });
+          if (attempt.status >= 500 && i < proxyBases.length - 1) continue; // try the next proxy
+          res = attempt;
+          break;
+        } catch (fetchErr) {
+          if (i === proxyBases.length - 1) throw fetchErr; // out of proxies to try
+          // otherwise fall through to the next proxyBases entry
+        }
+      }
+
       try {
-        // api.adsb.lol doesn't send Access-Control-Allow-Origin for browser requests
-        // from arbitrary origins either, so this goes through the same Wispbyte proxy
-        // as the point lookups above (see server.js) rather than hitting adsb.lol
-        // directly. Note: adsb.lol is known to 403 datacenter/cloud IPs, which is what
-        // this proxy's own outbound requests look like to it - if that happens here,
-        // this call fails gracefully (falls through to queryAdsbdb/queryHexdb below)
-        // rather than breaking anything.
-        const res = await fetch(`${WORKER_URL}${ROUTESET_PATH}`, {
-          method: 'POST',
-          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-          cache: 'no-store',
-          body: JSON.stringify({ planes: [{ callsign, lat: Number(ac.lat), lng: Number(ac.lon) }] })
-        });
         if (res.status === 429) return undefined;
         if (!res.ok) return null;
         let data;
@@ -2120,6 +2143,7 @@
       const adsbUrl = `https://api.adsb.lol/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
       const endpoints = [
         ...(WORKER_URL ? [`${WORKER_URL}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`] : []),
+        ...(WORKER_URL_BACKUP ? [`${WORKER_URL_BACKUP}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`] : []),
         FALLBACK_PROXY + encodeURIComponent(adsbUrl)
       ];
       let success = false;
