@@ -1450,7 +1450,7 @@
           // this proxy's own outbound requests look like to it - if that happens here,
           // this call fails gracefully (falls through to queryAdsbdb/queryHexdb below)
           // rather than breaking anything.
-          const attempt = await fetch(`${proxyBases[i]}${ROUTESET_PATH}`, {
+          const attempt = await fetchWithTimeout(`${proxyBases[i]}${ROUTESET_PATH}`, {
             method: 'POST',
             headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
             cache: 'no-store',
@@ -1522,10 +1522,30 @@
       }
     }
 
+    // A regular fetch() never times out on its own - if a server accepts the
+    // TCP connection but never responds (as opposed to a fast connection
+    // refused / DNS failure, which reject almost immediately), the await
+    // just hangs indefinitely. That happened for real: a routeset POST to a
+    // downed proxy once sat pending for ~11 minutes, blocking the poll loop
+    // that was awaiting it and stalling everything downstream, including the
+    // scrollboard lock-on, even though aircraft data itself was already in
+    // and rendering fine. Every route-lookup fetch below goes through this
+    // wrapper so a hung request is aborted and treated as a normal failure
+    // (falls through to the next provider) instead of blocking forever.
+    async function fetchWithTimeout(url, options, timeoutMs = 8000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...options, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     async function queryAdsbdb(callsign) {
       if (Date.now() < adsbdbBackoffUntil) return undefined;
       try {
-        const res = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
+        const res = await fetchWithTimeout(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
         if (res.status === 429) { adsbdbBackoffUntil = Date.now() + 30000; return undefined; }
         if (!res.ok) return null;
         const data = await res.json();
@@ -1545,7 +1565,7 @@
     async function queryHexdb(callsign) {
       if (Date.now() < hexdbBackoffUntil) return undefined;
       try {
-        const res = await fetch(`https://hexdb.io/api/v1/route/icao/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
+        const res = await fetchWithTimeout(`https://hexdb.io/api/v1/route/icao/${encodeURIComponent(callsign)}`, { headers: { 'Accept': 'application/json' } });
         if (res.status === 429) { hexdbBackoffUntil = Date.now() + 30000; return undefined; }
         if (!res.ok) return null;
         const data = await res.json();
@@ -2214,8 +2234,21 @@
                 // resolving the whole liveAircraft list every poll needlessly floods adsbdb/hexdb.
                 // fetchRoutesForAircraft() has its own 5-minute cache, so this does NOT hit the
                 // route APIs once per aircraft refresh.
+                //
+                // Deliberately NOT awaited: this is supplementary data (route origin/destination
+                // for the sidebar), not core to rendering aircraft positions or the lock-on itself
+                // - resolveFlightRoute() just reads whatever's in routeCache synchronously, so if
+                // this hasn't finished yet the sidebar simply shows no route for one poll cycle (1s)
+                // until the next updateUIState() picks up the now-cached result. Awaiting this here
+                // previously meant a single slow/hung route provider blocked updateUIState(true) -
+                // and therefore lock-on - for as long as that request took (observed once: ~11
+                // minutes against a downed proxy, now bounded anyway by fetchWithTimeout above).
                 const scrollboardTarget = findScrollboardTarget(liveAircraft);
-                if (scrollboardTarget) await fetchRoutesForAircraft([scrollboardTarget]);
+                if (scrollboardTarget) {
+                  fetchRoutesForAircraft([scrollboardTarget]).catch((err) => {
+                    console.warn('[ROUTE] Background route fetch failed:', err);
+                  });
+                }
 
                 updateUIState(true);
                 success = true;
