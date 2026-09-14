@@ -1605,23 +1605,28 @@
       const cached = routeCache[key];
       if (cached && now - cached.checkedAt < ROUTE_CACHE_TTL_MS) return;
 
-      // Try the live position-aware routeset first. This is the key fix for
-      // non-standard airline callsigns such as SHT4YL and TOM5MH.
-      let result = await queryAdsbLolRoute(ac);
+      // Try ADSBDB first. It's the most reliable general-purpose route DB and
+      // doesn't have adsb.lol's datacenter-IP 403 problem. The live
+      // position-aware routeset (adsb.lol) runs next since it's the fix for
+      // non-standard airline callsigns such as SHT4YL and TOM5MH that ADSBDB
+      // can't resolve, then HexDB as the last resort.
+      let result = await queryAdsbdb(callsign);
       if (result === undefined) {
-        // Keep going to the other providers if routeset is temporarily rate-limited.
+        // Keep going to the other providers if adsbdb is temporarily rate-limited.
         result = null;
       }
-      if (result && !routePassesPositionCheck(result, ac)) {
-        console.warn('[ROUTE] rejected ADSB.lol route after validation', callsign, result);
-        result = null;
-      }
-
-      if (!result) result = await queryAdsbdb(callsign);
-      if (result === undefined) return;
       if (result && !routePassesPositionCheck(result, ac)) {
         console.warn('[ROUTE] rejected ADSBDB route after validation', callsign, result);
         result = null;
+      }
+
+      if (!result) {
+        result = await queryAdsbLolRoute(ac);
+        if (result === undefined) result = null;
+        if (result && !routePassesPositionCheck(result, ac)) {
+          console.warn('[ROUTE] rejected ADSB.lol route after validation', callsign, result);
+          result = null;
+        }
       }
       if (!result) {
         result = await queryHexdb(callsign);
