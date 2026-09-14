@@ -1370,6 +1370,7 @@
     const routeCache = {};
     let adsbdbBackoffUntil = 0;
     let hexdbBackoffUntil = 0;
+    let openSkyBackoffUntil = 0;
 
     function routeCacheKey(ac) {
       const hex = (ac && ac.hex || '').trim().toUpperCase();
@@ -1594,6 +1595,48 @@
       } catch (err) { console.warn('[ROUTE] HexDB lookup failed:', err); return null; }
     }
 
+    // ADSBDB/adsb.lol/HexDB are all callsign -> scheduled-route lookup tables built for airline
+    // flight numbers. GA aircraft (Cessnas, Pipers, etc.) broadcast their registration as the
+    // callsign and don't have a "scheduled route" for any of those tables to find, so all three
+    // legitimately come back empty. OpenSky's flight-track API sidesteps that: it looks up the
+    // aircraft by ICAO24 hex and returns the nearest airport to where its actual track began/
+    // ended, so it works for any aircraft with recent ADS-B history, GA or airline. It's an
+    // estimate rather than a verified schedule, so it's tagged and coloured differently below.
+    // It only sees flights OpenSky's own network already tracked, so very fresh departures (or
+    // aircraft only ever seen by this radar's own receiver) can still come back empty.
+    async function queryOpenSky(ac) {
+      const hex = (ac && ac.hex || '').trim().toLowerCase();
+      if (!/^[0-9a-f]{6}$/.test(hex)) return null;
+      if (Date.now() < openSkyBackoffUntil) return undefined;
+      try {
+        const end = Math.floor(Date.now() / 1000);
+        const begin = end - 48 * 60 * 60; // last 48h; OpenSky caps a single query span at 30 days
+        const res = await fetchWithTimeout(
+          `https://opensky-network.org/api/flights/aircraft?icao24=${encodeURIComponent(hex)}&begin=${begin}&end=${end}`,
+          { headers: { 'Accept': 'application/json' } }
+        );
+        if (res.status === 429) { openSkyBackoffUntil = Date.now() + 60000; return undefined; }
+        if (!res.ok) return null;
+        const flights = await res.json();
+        if (!Array.isArray(flights) || !flights.length) return null;
+        // Flights come back oldest-first; take the most recent one that has at least a
+        // departure airport (the arrival airport can legitimately be missing mid-flight).
+        const flight = [...flights].reverse().find(f => f && f.estDepartureAirport);
+        if (!flight) return null;
+        const fromIcao = validAirportCode(flight.estDepartureAirport) ? flight.estDepartureAirport.toUpperCase() : null;
+        const toIcao = validAirportCode(flight.estArrivalAirport) ? flight.estArrivalAirport.toUpperCase() : null;
+        if (!fromIcao || !toIcao) return null; // normaliseRoute needs both ends; still airborne with no arrival yet just means "try again later"
+        const from = airportDatabase[fromIcao];
+        const to = airportDatabase[toIcao];
+        return normaliseRoute({
+          fromCode: fromIcao, toCode: toIcao,
+          fromName: from ? from.name : '', toName: to ? to.name : '',
+          fromLat: from ? from.lat : undefined, fromLon: from ? from.lon : undefined,
+          toLat: to ? to.lat : undefined, toLon: to ? to.lon : undefined
+        }, 'opensky');
+      } catch (err) { console.warn('[ROUTE] OpenSky lookup failed:', err); return null; }
+    }
+
     async function fetchRoutesForAircraft(acList) {
       const ac = acList && acList[0];
       if (!ac) return;
@@ -1630,9 +1673,21 @@
       }
       if (!result) {
         result = await queryHexdb(callsign);
-        if (result === undefined) return;
+        if (result === undefined) result = null;
         if (result && !routePassesPositionCheck(result, ac)) {
           console.warn('[ROUTE] rejected HexDB route after validation', callsign, result);
+          result = null;
+        }
+      }
+
+      // Last resort: none of the callsign->schedule lookups had anything, most often because
+      // this is a GA aircraft flying under its registration rather than an airline flight
+      // number. Fall back to OpenSky's track-derived estimate.
+      if (!result) {
+        result = await queryOpenSky(ac);
+        if (result === undefined) result = null;
+        if (result && !routePassesPositionCheck(result, ac)) {
+          console.warn('[ROUTE] rejected OpenSky route after validation', callsign, result);
           result = null;
         }
       }
@@ -2646,9 +2701,17 @@
           document.getElementById('sb-to').innerHTML =
             `<b>${route.toCode}</b> — <span style="color:var(--text-dim);">${route.toName || airportName(route.toCode) || 'Aerodrome'}</span>`;
           tagEl.style.display = 'inline-block';
-          tagEl.className = 'route-source-tag confirmed';
-          tagEl.innerText = route.source === 'hexdb' ? 'HEXDB' : 'CONFIRMED';
-          tagEl.title = `Verified route data from ${route.source}`;
+          if (route.source === 'opensky') {
+            // Track-derived estimate, not a verified schedule - styled like the
+            // amber "estimated" tag rather than the green confirmed one.
+            tagEl.className = 'route-source-tag estimated';
+            tagEl.innerText = 'TRACK EST';
+            tagEl.title = 'Estimated from OpenSky ADS-B track history, not a verified schedule';
+          } else {
+            tagEl.className = 'route-source-tag confirmed';
+            tagEl.innerText = route.source === 'hexdb' ? 'HEXDB' : 'CONFIRMED';
+            tagEl.title = `Verified route data from ${route.source}`;
+          }
           document.getElementById('sb-eta').innerText = `ETA: ${computeEtaText(lockedAircraft, route)}`;
         }      }
     }
