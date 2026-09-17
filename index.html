@@ -2127,9 +2127,19 @@
         const oldLayer = weatherLayer;
         weatherLayer = newLayer;
         // Swap after the new tiles are in so there's no flash of no-weather between frames.
-        newLayer.once('load', () => {
+        // 'load' only fires if Leaflet actually had to fetch tiles for the current view - if
+        // everything's already cached (the common case on a dashboard that rarely pans/zooms),
+        // it never fires and oldLayer would leak forever, stacking translucent radar frames on
+        // top of each other into visible banding over time. A fallback timer guarantees cleanup
+        // either way; a flag stops the timer removing oldLayer twice if 'load' also fires.
+        let swapped = false;
+        const doSwap = () => {
+          if (swapped) return;
+          swapped = true;
           if (oldLayer) map.removeLayer(oldLayer);
-        });
+        };
+        newLayer.once('load', doSwap);
+        setTimeout(doSwap, 3000);
       } catch (err) {
         console.debug('[weather] failed to refresh radar overlay -', err);
       }
