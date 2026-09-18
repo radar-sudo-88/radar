@@ -1152,7 +1152,8 @@
       document.body.classList.toggle('night-mode', isNight);
     }
 
-    // Keyboard shortcut for testing the alert-lock path at a desktop: 5/6/7 -> 7500/7600/7700, 9 -> 7777 (QRA).
+    // Keyboard shortcut for testing the alert-lock path at a desktop: 5/6/7 -> 7500/7600/7700, 9 -> 7777 (QRA),
+// 0 -> injects a fake military contact to test the separate proximity-chirp path (see triggerTestMilitary()).
     // Also tracks the last few letters typed so "ufo" (typed in order, not necessarily fast)
     // triggers the UFO easter egg - see triggerUfoSighting().
     let ufoTypedBuffer = '';
@@ -1162,6 +1163,7 @@
       else if (e.key === '6') triggerTestSquawk('7600');
       else if (e.key === '7') triggerTestSquawk('7700');
       else if (e.key === '9') triggerTestSquawk('7777');
+      else if (e.key === '0') triggerTestMilitary();
 
       if (/^[a-zA-Z]$/.test(e.key)) {
         ufoTypedBuffer = (ufoTypedBuffer + e.key.toLowerCase()).slice(-3);
@@ -1862,6 +1864,40 @@
       };
     }
 
+    // Same TTL/merge pattern as buildTestAircraft() above, but exercises the military
+    // proximity-chirp path (announceMilitaryAircraft -> playAlertTone + triggerRedPulse)
+    // specifically, since that path previously had no manual trigger at all - unlike the
+    // squawk-emergency siren path, there was no way to confirm the chirp/flash actually fires
+    // without waiting for real qualifying traffic to pass within 35 NM.
+    function buildTestMilitaryAircraft() {
+      const bearingRad = Math.random() * 2 * Math.PI;
+      const distNM = 3 + Math.random() * 8;
+      const dLat = (distNM / 60) * Math.cos(bearingRad);
+      const dLon = (distNM / 60) * Math.sin(bearingRad) / Math.cos(userConfig.lat * Math.PI / 180);
+      return {
+        hex: 'TESTMIL' + Math.floor(Math.random() * 900 + 100),
+        flight: 'TESTMIL ',
+        lat: userConfig.lat + dLat,
+        lon: userConfig.lon + dLon,
+        alt_baro: 8000,
+        gs: 350,
+        track: Math.floor(Math.random() * 360),
+        squawk: '1200',
+        t: 'F35',
+        category: 'A5'
+      };
+    }
+
+    function triggerTestMilitary() {
+      testAircraft = buildTestMilitaryAircraft();
+      testAircraftExpiryAt = Date.now() + TEST_AIRCRAFT_TTL_MS;
+      console.log(`[TEST] Injecting fake military aircraft (${testAircraft.hex}) for ${TEST_AIRCRAFT_TTL_MS / 1000}s`);
+      liveAircraft = liveAircraft.filter(a => !a.hex || !a.hex.startsWith('TEST')).concat([testAircraft]);
+      recomputeAircraftPixelCache();
+      updateUIState(true);
+    }
+    window.triggerTestMilitary = triggerTestMilitary;
+
     function triggerTestSquawk(squawk) {
       squawk = String(squawk || '7700');
       if (!ALERT_SQUAWKS.includes(squawk)) {
@@ -2417,7 +2453,12 @@
         return true;
       }
 
-      if (cat === 'A7') return true;
+      // A7 = rotorcraft, A5/A6 = large / high-vortex-large (tankers, AWACS, big fast jets).
+      // drawVectorAircraftSilhouette() already treats A5/A6 as military for the scope icon -
+      // this was missing here, so an aircraft in the hardcoded type/callsign lists' blind spot
+      // (untracked squadron callsign, blank/unlisted type designator, no dbFlags bit set) could
+      // draw with the military icon/colour but never actually trip announceMilitaryAircraft().
+      if (cat === 'A7' || cat === 'A5' || cat === 'A6') return true;
 
       return false;
     }
