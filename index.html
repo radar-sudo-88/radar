@@ -2221,12 +2221,74 @@
     let cachedCenterPt = null;
     let cachedMaxRadiusPx = 0;
 
+    // Offscreen layer for the range rings, crosshair and N/S/E/W labels. These only
+    // ever change when centerPt/maxRadiusPx change (i.e. on resize - the map never
+    // pans or zooms), yet drawRadarScope was re-stroking 4 arcs + 4 shadowed
+    // fillText calls for them on *every* rendered frame, with shadowBlur turned on
+    // for all of it. shadowBlur is one of the most expensive canvas 2D operations,
+    // especially on a software-rendering path (e.g. Chromium on a Pi without GPU
+    // compositing) - paying that cost 30x/sec for pixels that are visually static
+    // was the single biggest remaining per-frame cost. Render it once here into an
+    // offscreen canvas instead, and just blit it (cheap) every frame.
+    let staticScopeCanvas = null;
+    let staticScopeCtx = null;
+
+    function renderStaticScopeLayer() {
+      if (!canvas || !cachedCenterPt) return;
+      if (!staticScopeCanvas) staticScopeCanvas = document.createElement('canvas');
+      if (staticScopeCanvas.width !== canvas.width || staticScopeCanvas.height !== canvas.height) {
+        staticScopeCanvas.width = canvas.width;
+        staticScopeCanvas.height = canvas.height;
+      }
+      if (!staticScopeCtx) staticScopeCtx = staticScopeCanvas.getContext('2d');
+
+      const sctx = staticScopeCtx;
+      const centerPt = cachedCenterPt;
+      const maxRadiusPx = cachedMaxRadiusPx;
+
+      sctx.clearRect(0, 0, staticScopeCanvas.width, staticScopeCanvas.height);
+
+      sctx.shadowColor = '#00ff66';
+      sctx.shadowBlur = 8;
+
+      sctx.strokeStyle = 'rgba(0, 255, 102, 0.35)';
+      sctx.lineWidth = 1;
+      [0.25, 0.5, 0.75, 1.0].forEach((factor) => {
+        const r = maxRadiusPx * factor;
+        sctx.beginPath();
+        sctx.arc(centerPt.x, centerPt.y, r, 0, 2 * Math.PI);
+        sctx.stroke();
+
+        sctx.fillStyle = 'rgba(0, 255, 102, 0.8)';
+        sctx.font = '9px system-ui';
+        sctx.fillText(`${(userConfig.radiusNM * factor).toFixed(0)} NM`, centerPt.x + 4, centerPt.y - r + 10);
+      });
+
+      sctx.beginPath();
+      sctx.moveTo(centerPt.x - maxRadiusPx, centerPt.y);
+      sctx.lineTo(centerPt.x + maxRadiusPx, centerPt.y);
+      sctx.moveTo(centerPt.x, centerPt.y - maxRadiusPx);
+      sctx.lineTo(centerPt.x, centerPt.y + maxRadiusPx);
+      sctx.strokeStyle = 'rgba(0, 255, 102, 0.25)';
+      sctx.stroke();
+
+      sctx.fillStyle = '#00ff66';
+      sctx.font = 'bold 11px system-ui';
+      sctx.fillText('N', centerPt.x - 4, centerPt.y - maxRadiusPx - 5);
+      sctx.fillText('S', centerPt.x - 4, centerPt.y + maxRadiusPx + 15);
+      sctx.fillText('E', centerPt.x + maxRadiusPx + 5, centerPt.y + 4);
+      sctx.fillText('W', centerPt.x - maxRadiusPx - 18, centerPt.y + 4);
+
+      sctx.shadowBlur = 0;
+    }
+
     function recomputeMapProjectionCache() {
       if (!map) return;
       cachedCenterPt = map.latLngToContainerPoint([userConfig.lat, userConfig.lon]);
       const edgeLat = userConfig.lat + (userConfig.radiusNM / 60);
       const edgePt = map.latLngToContainerPoint([edgeLat, userConfig.lon]);
       cachedMaxRadiusPx = Math.abs(edgePt.y - cachedCenterPt.y);
+      renderStaticScopeLayer();
     }
 
     // Recomputes the cached pixel point for every current aircraft and every trail point.
@@ -2834,36 +2896,11 @@
       const centerPt = cachedCenterPt;
       const maxRadiusPx = cachedMaxRadiusPx;
 
-      ctx.shadowColor = '#00ff66';
-      ctx.shadowBlur = 8;
-
-      ctx.strokeStyle = 'rgba(0, 255, 102, 0.35)';
-      ctx.lineWidth = 1;
-      [0.25, 0.5, 0.75, 1.0].forEach((factor) => {
-        const r = maxRadiusPx * factor;
-        ctx.beginPath();
-        ctx.arc(centerPt.x, centerPt.y, r, 0, 2 * Math.PI);
-        ctx.stroke();
-
-        ctx.fillStyle = 'rgba(0, 255, 102, 0.8)';
-        ctx.font = '9px system-ui';
-        ctx.fillText(`${(userConfig.radiusNM * factor).toFixed(0)} NM`, centerPt.x + 4, centerPt.y - r + 10);
-      });
-
-      ctx.beginPath();
-      ctx.moveTo(centerPt.x - maxRadiusPx, centerPt.y);
-      ctx.lineTo(centerPt.x + maxRadiusPx, centerPt.y);
-      ctx.moveTo(centerPt.x, centerPt.y - maxRadiusPx);
-      ctx.lineTo(centerPt.x, centerPt.y + maxRadiusPx);
-      ctx.strokeStyle = 'rgba(0, 255, 102, 0.25)';
-      ctx.stroke();
-
-      ctx.fillStyle = '#00ff66';
-      ctx.font = 'bold 11px system-ui';
-      ctx.fillText('N', centerPt.x - 4, centerPt.y - maxRadiusPx - 5);
-      ctx.fillText('S', centerPt.x - 4, centerPt.y + maxRadiusPx + 15);
-      ctx.fillText('E', centerPt.x + maxRadiusPx + 5, centerPt.y + 4);
-      ctx.fillText('W', centerPt.x - maxRadiusPx - 18, centerPt.y + 4);
+      // Range rings, crosshair and N/S/E/W labels are static (they only change on
+      // resize - see recomputeMapProjectionCache/renderStaticScopeLayer), so they're
+      // pre-rendered once onto an offscreen canvas and just blitted here instead of
+      // being re-stroked with shadowBlur on every frame.
+      if (staticScopeCanvas) ctx.drawImage(staticScopeCanvas, 0, 0);
 
       sweepAngle += SWEEP_RATE_RAD_PER_SEC * (dtMs / 1000);
       if (sweepAngle > 2 * Math.PI) sweepAngle -= 2 * Math.PI; // keep it bounded, doesn't affect the maths below either way
