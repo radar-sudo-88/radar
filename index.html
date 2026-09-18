@@ -767,16 +767,23 @@
   </script>
 
   <script>
-    // Node.js CORS proxy hosted on Wispbyte (see server.js) - forwards both
-    // the adsb.fi point-lookup and the adsb.lol routeset POST, since neither
+    // Node.js CORS proxy (see cors-proxy/server.js) - forwards both the
+    // adsb.fi point-lookup and the adsb.lol routeset POST, since neither
     // upstream sends Access-Control-Allow-Origin for browser requests from
     // arbitrary origins. Shared at module scope since both fetchLiveFlights()
     // and queryAdsbLolRoute() need it.
-    const WORKER_URL = 'https://cors-proxy-radar.wisp.uno';
-    // Second Wispbyte instance, tried if the primary proxy above is
-    // unreachable/errors, before falling back further to the third-party
-    // allorigins.win proxy (see the endpoints array below).
-    const WORKER_URL_BACKUP = 'https://cors-proxy-backup.wisp.uno';
+    //
+    // Self-hosted on the Pi now: server.js serves this page itself AND the
+    // proxy routes from one process on one port, so WORKER_URL is just ''
+    // (same origin the page was loaded from) rather than a separate
+    // hostname/port. That matters because the page is reached through a
+    // cloudflared tunnel, which only forwards one local port - a second port
+    // for the proxy wouldn't be reachable from wherever the tunnel is being
+    // viewed. Same-origin works unchanged on localhost, through the
+    // throwaway trycloudflare.com tunnel, and once aero-sentry.co.uk is live.
+    const WORKER_URL = location.origin;
+    // No second instance when self-hosting on the Pi.
+    const WORKER_URL_BACKUP = null;
     const ROUTESET_PATH = '/api/0/routeset';
     const userConfig = { lat: 52.9529, lon: -0.9547, radiusNM: 35 };
 

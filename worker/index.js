@@ -24,7 +24,18 @@
 //   4. Copy the resulting https://<name>.<subdomain>.workers.dev URL
 //   5. Paste it into WORKER_URL near the top of index.html's fetchLiveFlights()
 
-const ALLOWED_ORIGIN = 'https://radar-sudo-88.github.io';
+// Multiple origins now serve this page: the original GitHub Pages deploy,
+// the Pi running it locally, a throwaway trycloudflare.com tunnel while
+// aero-sentry.co.uk's nameservers propagate, and that domain once it's live.
+// Exact matches plus a pattern for the trycloudflare subdomain, which
+// changes every time the throwaway tunnel is restarted.
+const ALLOWED_ORIGINS = [
+  'https://radar-sudo-88.github.io',
+  'https://aero-sentry.co.uk',
+  'https://www.aero-sentry.co.uk',
+  'http://localhost:8080',
+];
+const ALLOWED_ORIGIN_PATTERNS = [/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/];
 const UPSTREAM = 'https://opendata.adsb.fi';
 // adsb.fi rate-limits public endpoints to 1 request/second per IP, and counts
 // 400/401/403/404/429 responses toward that limit too - so caching here
@@ -47,10 +58,19 @@ function corsHeaders(origin) {
   };
 }
 
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
+}
+
 export default {
   async fetch(request) {
     const origin = request.headers.get('Origin');
-    const allowOrigin = origin === ALLOWED_ORIGIN ? origin : ALLOWED_ORIGIN;
+    // Reflect the caller's own origin back only if it's on the allowlist -
+    // never a blanket '*', so this worker (and its adsb.fi rate budget)
+    // can't be embedded by arbitrary third-party sites.
+    const allowOrigin = isAllowedOrigin(origin) ? origin : ALLOWED_ORIGINS[0];
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(allowOrigin) });

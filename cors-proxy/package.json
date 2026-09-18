@@ -1,7 +1,7 @@
 {
   "name": "adsb-cors-proxy",
   "version": "1.0.0",
-  "description": "Node.js CORS proxy for api.adsb.lol — Wispbyte-hosted alternative to the Cloudflare Worker",
+  "description": "Node.js CORS proxy for adsb.fi/adsb.lol, and static server for the radar page itself when self-hosted (e.g. on a Raspberry Pi).",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

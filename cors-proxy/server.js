@@ -55,11 +55,80 @@
  */
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
+
+// --- Static file serving -----------------------------------------------
+// This proxy now also serves the site itself (index.html, 404.html, assets)
+// from the repo root, one directory up from this file. Reason: the page is
+// tunnelled (cloudflared) to a hostname that only forwards ONE local port.
+// If the static site and this proxy ran on two different ports, the tunnel
+// would only expose one of them - the other would be unreachable from
+// wherever the tunnel is being viewed. Serving both from this single
+// process/port means the browser always calls the proxy on the exact same
+// origin it loaded the page from (see WORKER_URL = '' in index.html), so
+// nothing needs to track hostnames or ports across localhost / a throwaway
+// trycloudflare.com tunnel / the eventual aero-sentry.co.uk domain.
+const STATIC_ROOT = path.join(__dirname, '..');
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+function serveStatic(req, res, pathname) {
+  // Strip query/hash (already done by URL parsing upstream) and prevent
+  // path traversal (e.g. "/../server.js") by resolving and checking the
+  // result is still inside STATIC_ROOT.
+  const safePath = path.normalize(pathname).replace(/^(\.\.[/\\])+/, '');
+  let filePath = path.join(STATIC_ROOT, safePath === '/' ? 'index.html' : safePath);
+  if (!filePath.startsWith(STATIC_ROOT)) {
+    send(res, 403, { 'Content-Type': 'text/plain' }, 'Forbidden');
+    return;
+  }
+
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      // Unknown path - serve 404.html if present, else a plain 404.
+      fs.readFile(path.join(STATIC_ROOT, '404.html'), (err2, notFoundData) => {
+        if (err2) {
+          send(res, 404, { 'Content-Type': 'text/plain' }, 'Not found');
+        } else {
+          send(res, 404, { 'Content-Type': 'text/html; charset=utf-8' }, notFoundData);
+        }
+      });
+      return;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    send(res, 200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' }, data);
+  });
+}
 
 // --- Config -----------------------------------------------------------
 const PORT = process.env.PORT || 10004;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://radar-sudo-88.github.io';
+// Comma-separated list, e.g. ALLOWED_ORIGINS="https://a.com,http://localhost:8080".
+// Falls back to a sensible default set covering the GitHub Pages deploy, the
+// Pi serving it locally, a throwaway trycloudflare.com tunnel (subdomain
+// changes every restart, so matched by pattern below), and aero-sentry.co.uk
+// once its nameservers finish propagating.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+  : [
+      'https://radar-sudo-88.github.io',
+      'https://aero-sentry.co.uk',
+      'https://www.aero-sentry.co.uk',
+      'http://localhost:8080',
+    ]);
+const ALLOWED_ORIGIN_PATTERNS = [/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/];
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
+}
 const ADSBFI_UPSTREAM = 'https://opendata.adsb.fi';
 const ADSBLOL_ROUTESET_UPSTREAM = 'https://api.adsb.lol/api/0/routeset';
 const CACHE_SECONDS = 2;
@@ -361,7 +430,10 @@ async function handleRouteset(req, res, cors) {
 const server = http.createServer(async (req, res) => {
   try {
     const origin = req.headers.origin;
-    const allowOrigin = origin === ALLOWED_ORIGIN ? origin : ALLOWED_ORIGIN;
+    // Reflect the caller's own origin back only if it's on the allowlist -
+    // never a blanket wildcard, so this proxy (and its adsb.fi/adsb.lol rate
+    // budget) can't be embedded by arbitrary third-party sites.
+    const allowOrigin = isAllowedOrigin(origin) ? origin : ALLOWED_ORIGINS[0];
     const cors = corsHeaders(allowOrigin);
     // Temporary debug line - check the Wispbyte console after a request to
     // confirm this process actually set the header, vs. something in front of
@@ -383,6 +455,15 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === ROUTESET_PATH) {
       await handleRouteset(req, res, cors);
+      return;
+    }
+
+    // Anything else GET - serve it as a static file from the repo root
+    // (index.html, 404.html, spritesheet assets, etc). CORS headers aren't
+    // needed here since these are same-origin page loads, not cross-origin
+    // API calls, but including them is harmless.
+    if (req.method === 'GET') {
+      serveStatic(req, res, url.pathname);
       return;
     }
 
@@ -427,7 +508,7 @@ setInterval(() => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`ADS-B CORS proxy listening on 0.0.0.0:${PORT}`);
-  console.log(`Allowed origin: ${ALLOWED_ORIGIN}`);
+  console.log(`Allowed origins: ${ALLOWED_ORIGINS.join(', ')} (+ *.trycloudflare.com)`);
   console.log(`Point-lookup upstream: ${ADSBFI_UPSTREAM}`);
   console.log(`Routeset upstream: ${ADSBLOL_ROUTESET_UPSTREAM}`);
 });
