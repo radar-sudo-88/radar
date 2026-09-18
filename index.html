@@ -867,6 +867,10 @@
     const AIRCRAFT_POLL_MS = 2500;
     const AIRCRAFT_STALE_GRACE_MS = 5000;
     const aircraftTrails = {};
+    // How long a trail survives after we stop receiving its aircraft. Generous enough that a
+    // brief dropout in one poll doesn't clear a live aircraft's trail, short enough that
+    // departed traffic doesn't leave permanent ghost lines on the scope.
+    const TRAIL_RETENTION_MS = 120000;
     // hex -> Date.now() of the last time the sweep beam passed this aircraft's bearing (CRT-style
     // "blip brightens on sweep pass, fades until the next one" - see drawRadarScope). The locked
     // aircraft is exempt and always drawn at full brightness regardless of this.
@@ -2334,10 +2338,28 @@
                   if (!aircraftFirstSeenAt[ac.hex]) aircraftFirstSeenAt[ac.hex] = receivedAt;
                   if (!aircraftTrails[ac.hex]) aircraftTrails[ac.hex] = [];
                   const t = aircraftTrails[ac.hex];
+                  t.__lastSeenAt = receivedAt;
                   const last = t[t.length - 1];
                   if (!last || Math.abs(last.lat - ac.lat) > 0.0005 || Math.abs(last.lon - ac.lon) > 0.0005) {
                     t.push({ lat: ac.lat, lon: ac.lon });
                     if (t.length > 20) t.shift();
+                  }
+                });
+
+                // Drop trails for aircraft we've stopped receiving. aircraftTrails is keyed by
+                // hex and the render loop walks every key each frame, so without this an
+                // aircraft that left the scope hours ago still has its 20-point trail drawn
+                // forever. Over a long session hundreds of these ghost trails accumulate and
+                // their translucent blue strokes overlap into dense banding across the scope
+                // (and the per-frame loop grows without bound). TRAIL_RETENTION_MS is well past
+                // the point an aircraft could still be in range, so live traffic that briefly
+                // drops out of a poll keeps its trail.
+                Object.keys(aircraftTrails).forEach(hex => {
+                  const lastSeen = aircraftTrails[hex].__lastSeenAt || 0;
+                  if (receivedAt - lastSeen > TRAIL_RETENTION_MS) {
+                    delete aircraftTrails[hex];
+                    delete aircraftLastSweepHit[hex];
+                    delete aircraftFirstSeenAt[hex];
                   }
                 });
 
