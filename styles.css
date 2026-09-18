@@ -11,6 +11,11 @@
       --accent-amber-dim: #7a5a00;
     }
 
+    /* Fluid root size: stays at 16px up to ~1450px wide (phones, tablets, laptops unchanged),
+       then grows with the viewport so a 1080p/4K wall display isn't left with tiny text.
+       Sidebar width and footer height below are in rem so they scale along with it. */
+    html { font-size: clamp(16px, 0.55vw + 8px, 26px); }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
@@ -18,6 +23,7 @@
       color: var(--text-main);
       font-family: system-ui, -apple-system, sans-serif;
       height: 100vh;
+      height: 100dvh; /* dynamic viewport: excludes mobile browser toolbars that 100vh doesn't */
       width: 100vw;
       overflow: hidden;
       display: flex;
@@ -40,6 +46,7 @@
       left: 0;
       width: 100vw;
       height: 100vh;
+      height: 100dvh;
       z-index: 9999;
       pointer-events: none;
       background: rgba(255, 0, 0, 0);
@@ -60,7 +67,7 @@
     #start-overlay {
       position: fixed;
       top: 0; left: 0;
-      width: 100vw; height: 100vh;
+      width: 100vw; height: 100vh; height: 100dvh;
       background: rgba(1, 5, 2, 0.97);
       z-index: 10000;
       display: flex;
@@ -106,7 +113,7 @@
       flex: 1;
       padding: 0.3rem;
       display: grid;
-      grid-template-columns: 1fr 340px;
+      grid-template-columns: 1fr 21.25rem; /* 340px @ 16px root */
       gap: 0.3rem;
       width: 100%;
       min-height: 0;
@@ -255,7 +262,7 @@
     }
 
     footer {
-      height: 110px;
+      height: 6.875rem; /* 110px @ 16px root */
       background: rgba(2, 10, 5, 0.98);
       border-top: 1px solid var(--card-border);
       padding: 0.3rem 0.4rem;
@@ -491,7 +498,8 @@
        ===================================================================
        Desktop is a fixed 2-column grid (radar + a 340px sidebar) with a
        wide horizontal scrollboard footer - all of which is too cramped to
-       read on a phone. Below ~700px wide in portrait, this switches to:
+       read on a phone. Up to ~1100px wide in portrait (phones AND tablets),
+       this switches to:
          - radar on top, full width
          - the military-transponder list as a horizontal scroll strip
            instead of competing with the radar for vertical space
@@ -501,7 +509,7 @@
        layout already suits a wide-but-short screen, it just needs a
        narrower sidebar and smaller text to fit.
     */
-    @media (max-width: 700px) and (orientation: portrait) {
+    @media (max-width: 1100px) and (orientation: portrait) {
       main {
         grid-template-columns: 1fr;
         grid-template-rows: minmax(0, 1fr) 96px;
@@ -614,6 +622,30 @@
       .sub-title {
         font-size: 0.5rem;
       }
+    }
+
+    /* Tablets in portrait (iPad-class, 701-1100px wide): same stacked arrangement as the
+       phone rules above, but there's plenty of room, so give the transponder strip and the
+       scrollboard more height and bump the text back up from its phone-sized values. */
+    @media (min-width: 701px) and (max-width: 1100px) and (orientation: portrait) {
+      main {
+        grid-template-rows: minmax(0, 1fr) 11rem;
+        padding: 0.35rem;
+        gap: 0.35rem;
+      }
+
+      .sidebar { height: 11rem; }
+      .panel-title { font-size: 0.72rem; }
+      .ac-card { width: 300px; }
+
+      footer { height: 10.5rem; }
+      .scrollboard { grid-template-columns: 120px 1fr; }
+      .airline-heading { font-size: 1.15rem; }
+      .aircraft-meta, .route-container { font-size: 0.78rem; }
+      .primary-metric { font-size: 1.1rem; }
+      .secondary-metric { font-size: 0.78rem; }
+      .sub-title { font-size: 0.62rem; }
+      #altitude-legend { font-size: 0.62rem; }
     }
 
     /* Short/landscape phones: keep the desktop side-by-side arrangement (a

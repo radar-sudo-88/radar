@@ -351,7 +351,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
       initMap();
       resizeCanvas();
-      window.addEventListener('resize', resizeCanvas);
+      watchScreenSize();
       buildAltitudeLegend();
 
       applyNightMode();
@@ -1430,13 +1430,58 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       }
     }
 
+    // ---------------------------------------------------------------------
+    // Screen profile: the scope is drawn in CSS-pixel coordinates (the same units Leaflet
+    // reports), but the canvas backing store is sized to real device pixels so it stays sharp
+    // on high-density screens (an iPhone is 3x - previously everything was drawn at 1x and
+    // upscaled by the browser, i.e. soft). Two guard-rails keep that from costing too much on
+    // weak hardware like a Pi driving a big display:
+    //   - density is capped at MAX_CANVAS_DPR, and
+    //   - it is also lowered (never below 1x) if the backing store would exceed
+    //     MAX_BACKING_PIXELS, since the whole canvas is repainted 30x a second.
+    // uiScale grows the drawn glyphs (aircraft icons, callsign labels, ring labels) on large
+    // scopes, where they'd otherwise look tiny; it stays at 1 for anything <= 800px so phone
+    // and small-window rendering is unchanged.
+    const MAX_CANVAS_DPR = 2;
+    const MAX_BACKING_PIXELS = 6e6;
+    const UI_SCALE_REFERENCE_PX = 800;
+    const MAX_UI_SCALE = 2;
+    let viewW = 0;      // scope size in CSS px
+    let viewH = 0;
+    let canvasDpr = 1;  // backing-store pixels per CSS px
+    let uiScale = 1;    // multiplier for drawn glyph sizes
+
+    function computeScreenProfile(cssW, cssH) {
+      const budgetDpr = Math.sqrt(MAX_BACKING_PIXELS / Math.max(1, cssW * cssH));
+      const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR, budgetDpr));
+      const scale = Math.max(1, Math.min(MAX_UI_SCALE, Math.min(cssW, cssH) / UI_SCALE_REFERENCE_PX));
+      return { dpr, scale };
+    }
+
     function resizeCanvas() {
       if (!canvas) return;
       const container = document.getElementById('radarContainer');
       const rect = container.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-      
+      const cssW = Math.round(rect.width);
+      const cssH = Math.round(rect.height);
+      if (cssW === 0 || cssH === 0) return; // hidden / mid-layout - the observer will fire again
+
+      const profile = computeScreenProfile(cssW, cssH);
+      // Resize events (and the ResizeObserver) can fire without anything that matters having
+      // changed - skip the canvas reset + map re-fit + full cache rebuild in that case.
+      if (cssW === viewW && cssH === viewH && profile.dpr === canvasDpr) return;
+
+      viewW = cssW;
+      viewH = cssH;
+      canvasDpr = profile.dpr;
+      uiScale = profile.scale;
+
+      canvas.width = Math.round(cssW * canvasDpr);
+      canvas.height = Math.round(cssH * canvasDpr);
+      // Setting canvas.width above reset the context, so the density transform has to be
+      // re-applied every time. After this, all drawing code keeps using CSS-pixel coordinates.
+      ctx.setTransform(canvasDpr, 0, 0, canvasDpr, 0, 0);
+
       if (map && radarCircle) {
         map.invalidateSize();
         map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
@@ -1448,6 +1493,32 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // map itself is drawn until the next 12s poll happens to refresh them.
       recomputeMapProjectionCache();
       recomputeAircraftPixelCache();
+    }
+
+    // Re-fit whenever the scope's container changes size for ANY reason - window resize,
+    // phone/tablet rotation, iPad split-view, the mobile browser toolbar collapsing, or a CSS
+    // media query swapping layouts. window 'resize' alone misses several of those (notably
+    // some iOS rotation and toolbar cases), so the ResizeObserver is the primary trigger and
+    // 'resize'/'orientationchange' are belt-and-braces. Callbacks are coalesced to one per
+    // animation frame, and resizeCanvas() itself no-ops if nothing meaningful changed.
+    function watchScreenSize() {
+      let pending = false;
+      const schedule = () => {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(() => {
+          pending = false;
+          resizeCanvas();
+        });
+      };
+
+      const container = document.getElementById('radarContainer');
+      if (typeof ResizeObserver !== 'undefined' && container) {
+        new ResizeObserver(schedule).observe(container);
+      }
+      window.addEventListener('resize', schedule);
+      // iOS can report the pre-rotation size for a moment after the event fires.
+      window.addEventListener('orientationchange', () => setTimeout(schedule, 300));
     }
 
     // ---------------------------------------------------------------------
@@ -1490,11 +1561,16 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const sctx = staticScopeCtx;
       const centerPt = cachedCenterPt;
       const maxRadiusPx = cachedMaxRadiusPx;
+      const s = uiScale;
 
-      sctx.clearRect(0, 0, staticScopeCanvas.width, staticScopeCanvas.height);
+      // Same density transform as the main canvas, so this layer is also drawn in CSS px.
+      sctx.setTransform(canvasDpr, 0, 0, canvasDpr, 0, 0);
+      sctx.clearRect(0, 0, viewW, viewH);
 
+      // shadowBlur is specified in device pixels and ignores the transform, so it has to be
+      // multiplied by the density to look the same width at 2x as at 1x.
       sctx.shadowColor = '#00ff66';
-      sctx.shadowBlur = 8;
+      sctx.shadowBlur = 8 * canvasDpr;
 
       sctx.strokeStyle = 'rgba(0, 255, 102, 0.35)';
       sctx.lineWidth = 1;
@@ -1505,8 +1581,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         sctx.stroke();
 
         sctx.fillStyle = 'rgba(0, 255, 102, 0.8)';
-        sctx.font = '9px system-ui';
-        sctx.fillText(`${(userConfig.radiusNM * factor).toFixed(0)} NM`, centerPt.x + 4, centerPt.y - r + 10);
+        sctx.font = `${9 * s}px system-ui`;
+        sctx.fillText(`${(userConfig.radiusNM * factor).toFixed(0)} NM`, centerPt.x + 4 * s, centerPt.y - r + 10 * s);
       });
 
       sctx.beginPath();
@@ -1518,11 +1594,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       sctx.stroke();
 
       sctx.fillStyle = '#00ff66';
-      sctx.font = 'bold 11px system-ui';
-      sctx.fillText('N', centerPt.x - 4, centerPt.y - maxRadiusPx - 5);
-      sctx.fillText('S', centerPt.x - 4, centerPt.y + maxRadiusPx + 15);
-      sctx.fillText('E', centerPt.x + maxRadiusPx + 5, centerPt.y + 4);
-      sctx.fillText('W', centerPt.x - maxRadiusPx - 18, centerPt.y + 4);
+      sctx.font = `bold ${11 * s}px system-ui`;
+      sctx.fillText('N', centerPt.x - 4 * s, centerPt.y - maxRadiusPx - 5 * s);
+      sctx.fillText('S', centerPt.x - 4 * s, centerPt.y + maxRadiusPx + 15 * s);
+      sctx.fillText('E', centerPt.x + maxRadiusPx + 5 * s, centerPt.y + 4 * s);
+      sctx.fillText('W', centerPt.x - maxRadiusPx - 18 * s, centerPt.y + 4 * s);
 
       sctx.shadowBlur = 0;
     }
@@ -2111,7 +2187,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       lastRenderTimestamp = timestamp;
 
       if (!ctx || !canvas || !map || !cachedCenterPt) return;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, viewW, viewH);
 
       processAutoScroll();
 
@@ -2124,7 +2200,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // resize - see recomputeMapProjectionCache/renderStaticScopeLayer), so they're
       // pre-rendered once onto an offscreen canvas and just blitted here instead of
       // being re-stroked with shadowBlur on every frame.
-      if (staticScopeCanvas) ctx.drawImage(staticScopeCanvas, 0, 0);
+      if (staticScopeCanvas) ctx.drawImage(staticScopeCanvas, 0, 0, viewW, viewH);
 
       sweepAngle += SWEEP_RATE_RAD_PER_SEC * (dtMs / 1000);
       if (sweepAngle > 2 * Math.PI) sweepAngle -= 2 * Math.PI; // keep it bounded, doesn't affect the maths below either way
@@ -2158,7 +2234,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const sweepX = centerPt.x + Math.cos(sweepAngle) * maxRadiusPx;
       const sweepY = centerPt.y + Math.sin(sweepAngle) * maxRadiusPx;
       ctx.shadowColor = '#00ff66';
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = 6 * canvasDpr;
       ctx.beginPath();
       ctx.moveTo(centerPt.x, centerPt.y);
       ctx.lineTo(sweepX, sweepY);
@@ -2216,20 +2292,20 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           ctx.globalAlpha = fadeAlpha;
 
           if (isLocked) {
-            const pulseRadius = 12 + Math.sin(Date.now() / 150) * 3;
+            const pulseRadius = (12 + Math.sin(Date.now() / 150) * 3) * uiScale;
             ctx.beginPath();
             ctx.arc(pt.x, pt.y, pulseRadius, 0, 2 * Math.PI);
             ctx.strokeStyle = '#ff3333';
             ctx.lineWidth = 2;
             ctx.shadowColor = '#ff3333';
-            ctx.shadowBlur = 10;
+            ctx.shadowBlur = 10 * canvasDpr;
             ctx.stroke();
             ctx.shadowBlur = 0;
           }
 
           if (ac.track !== undefined) {
             const trackRad = (ac.track - 90) * (Math.PI / 180);
-            const lineLen = 16;
+            const lineLen = 16 * uiScale;
             const endX = pt.x + Math.cos(trackRad) * lineLen;
             const endY = pt.y + Math.sin(trackRad) * lineLen;
             ctx.beginPath();
@@ -2253,27 +2329,33 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           // Local spritesheet lookup - specific type designator first, falling back to the
           // aircraft's ADS-B category's generic silhouette. Draws nothing (beyond the label)
           // if neither is covered - see drawPwSilhouette/resolvePwSpriteKey above.
+          ctx.save();
+          ctx.translate(pt.x, pt.y);
+          ctx.scale(uiScale, uiScale);
+          ctx.translate(-pt.x, -pt.y);
           drawPwSilhouette(ctx, ac, pt, heading, silColor);
+          ctx.restore();
 
           ctx.globalAlpha = fadeAlpha;
-          ctx.font = 'bold 9px system-ui';
+          const s = uiScale;
+          ctx.font = `bold ${9 * s}px system-ui`;
           const label = ac.flight ? ac.flight.trim() : ac.hex;
           const altText = ac.alt_baro ? ` FL${Math.round(ac.alt_baro / 100)}` : '';
           const labelText = `${label}${altText}`;
 
           const labelMetrics = ctx.measureText(labelText);
-          const labelPadX = 2;
-          const labelPadY = 1;
+          const labelPadX = 2 * s;
+          const labelPadY = 1 * s;
           const labelBoxW = labelMetrics.width + labelPadX * 2;
-          const labelBoxH = 9 + labelPadY * 2;
-          let labelBoxX = pt.x + 7 - labelPadX;
-          let labelBoxY = pt.y + 3 - 7 - labelPadY;
+          const labelBoxH = 9 * s + labelPadY * 2;
+          let labelBoxX = pt.x + 7 * s - labelPadX;
+          let labelBoxY = pt.y + (3 - 7) * s - labelPadY;
 
           // Nudge this label down, a row at a time, until it clears every box already
           // placed this frame - so two aircraft close together on screen get readable,
           // stacked labels instead of one illegible overlapping blob. Capped at 24 tries
           // (a tall stack of coincident blips) so this can never hang the render loop.
-          const labelBoxGap = 2;
+          const labelBoxGap = 2 * s;
           for (let attempt = 0; attempt < 24; attempt++) {
             const collidesWith = placedLabelBoxes.find(box =>
               labelBoxX < box.x + box.w &&
@@ -2293,7 +2375,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           ctx.fillRect(labelBoxX, labelBoxY, labelBoxW, labelBoxH);
 
           ctx.fillStyle = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : '#8b4513');
-          ctx.fillText(labelText, labelBoxX + labelPadX, labelBoxY + labelBoxH - labelPadY - 2);
+          ctx.fillText(labelText, labelBoxX + labelPadX, labelBoxY + labelBoxH - labelPadY - 2 * s);
 
           ctx.restore(); // matches the fadeAlpha save() above
         });
