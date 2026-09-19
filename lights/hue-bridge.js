@@ -44,6 +44,10 @@
  *   HUE_STEP_MS       length of each on / off phase in ms (default 600)
  *   HUE_COOLDOWN_MS   minimum gap between flashes (default 20000)
  *   HUE_STATE         where save/restore snapshots live (default ~/.radar-hue-state.json)
+ *   HUE_RESTORE       what specific lights should go back to after a flash, instead of the state the
+ *                     bridge reported beforehand. For cheap/generic strips whose reported colour is
+ *                     unreliable. Semicolon-separated:  "Book shelf=#ff9a3c@60;Lamp=warm@80"
+ *                     (colour name, hex, or white tone like warm / 2700k, then @brightness).
  */
 
 const http = require('http');
@@ -206,6 +210,41 @@ function writeState(name, snaps) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(all, null, 2), { mode: 0o600 });
 }
 
+// HUE_RESTORE: fixed "rest" looks for lights whose reported state can't be trusted (see header).
+function parseLook(value) {
+  const [what, bri] = value.split('@');
+  const w = what.trim().toLowerCase();
+  const look = {};
+  if (bri != null && bri.trim() !== '') look.brightness = parseBrightness(bri.trim());
+  if (WHITES[w]) look.mirek = WHITES[w];
+  else if (/^\d{4,5}k$/.test(w)) look.mirek = Math.round(1e6 / parseInt(w, 10));
+  else {
+    const xy = hexToXy(COLOURS[w] || w);
+    if (!xy) throw new Error(`HUE_RESTORE: don't understand '${what}'`);
+    look.xy = xy;
+  }
+  return look;
+}
+
+function applyRestoreOverrides(snaps) {
+  const raw = process.env.HUE_RESTORE;
+  if (!raw) return snaps;
+  const rules = raw.split(';').map((r) => r.trim()).filter(Boolean).map((r) => {
+    const i = r.indexOf('=');
+    if (i < 1) throw new Error(`HUE_RESTORE: expected name=look, got '${r}'`);
+    return { name: r.slice(0, i).trim().toLowerCase(), look: parseLook(r.slice(i + 1)) };
+  });
+  return snaps.map((s) => {
+    const n = s.name.toLowerCase();
+    const rule = rules.find((r) => r.name === n) || rules.find((r) => n.includes(r.name));
+    if (!rule) return s;
+    const o = { ...s, on: true, ...rule.look };
+    if (rule.look.xy) delete o.mirek;
+    if (rule.look.mirek) delete o.xy;
+    return o;
+  });
+}
+
 async function flashLights(cfg) {
   const lights = selectLights(await fetchLights(cfg));
   if (!lights.length) { log('no lights to flash (none matched, or all are off - see HUE_INCLUDE_OFF)'); return 0; }
@@ -220,12 +259,21 @@ async function flashLights(cfg) {
     for (let i = 0; i < FLASHES; i++) {
       await Promise.allSettled(snaps.map((s) => putLight(cfg, s.id, redBody())));
       await sleep(phaseMs);
-      await Promise.allSettled(snaps.map((s) => putLight(cfg, s.id, offBody())));
-      await sleep(phaseMs);
+      // Finish on red rather than off, so the restore below is a plain colour change on a light
+      // that's already on. Some generic strips ignore a colour sent in the same command that
+      // switches them on from off.
+      if (i < FLASHES - 1) {
+        await Promise.allSettled(snaps.map((s) => putLight(cfg, s.id, offBody())));
+        await sleep(phaseMs);
+      }
     }
   } finally {
     // Always put things back, even if a command above failed.
-    await restoreLights(cfg, snaps);
+    let target = snaps;
+    try { target = applyRestoreOverrides(snaps); } catch (err) { log(err.message, '- using the saved state instead'); }
+    // Lights that were off must still end up off, whatever the override says.
+    target = target.map((t, i) => ({ ...t, on: snaps[i].on }));
+    await restoreLights(cfg, target);
     log('lights restored');
   }
   return snaps.length;
