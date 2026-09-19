@@ -2386,3 +2386,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     document.getElementById('start-overlay').addEventListener('click', startFeed);
     document.getElementById('start-overlay').addEventListener('touchstart', startFeed);
+
+    // Unattended kiosk: the Pi's launcher (deploy/kiosk.sh) opens the page with ?autostart=1 so
+    // it starts by itself instead of waiting for a tap. Normal visitors never see this - without
+    // the parameter the tap-to-start overlay behaves exactly as before. For sound to work with no
+    // real gesture, that browser must also be started with
+    // --autoplay-policy=no-user-gesture-required (kiosk.sh does this).
+    if (new URLSearchParams(location.search).get('autostart') === '1') startFeed();
