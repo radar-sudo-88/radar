@@ -14,6 +14,19 @@
  *   node lights/hue-bridge.js test               flash right now (checks the whole chain, ignores cooldown)
  *   node lights/hue-bridge.js serve              run the local server (default; this is what the service runs)
  *
+ * Manual control (<light> is part of a light's name, e.g. "strip", or "all"):
+ *   on [light]   |   off [light]
+ *   color <light> <colour> [brightness]      colour = red orange yellow green cyan blue purple pink
+ *                                            magenta, or a hex code like #ff8800
+ *   white <light> [tone] [brightness]        tone = warm neutral cool daylight, a temperature like
+ *                                            2700k, or a mirek value (153-500). Default: warm
+ *   brightness <light> <0-100>               (0 switches it off)
+ *   state <light>                            everything the bridge reports for that light
+ *   save [name]  |  restore [name] [light]   snapshot / put back all lights (name defaults to "default").
+ *                                            Every flash first saves the lights as "preflash", so a
+ *                                            flash that goes wrong can be undone: restore preflash
+ *   help                                     this list
+ *
  * The bridge address and app key are stored in ~/.radar-hue.json (mode 600, outside the repo so it
  * can never be committed). HUE_BRIDGE_IP / HUE_APP_KEY env vars override it.
  *
@@ -30,6 +43,7 @@
  *   HUE_FLASHES       number of red flashes (default 3)
  *   HUE_STEP_MS       length of each on / off phase in ms (default 600)
  *   HUE_COOLDOWN_MS   minimum gap between flashes (default 20000)
+ *   HUE_STATE         where save/restore snapshots live (default ~/.radar-hue-state.json)
  */
 
 const http = require('http');
@@ -39,6 +53,7 @@ const os = require('os');
 const path = require('path');
 
 const CONFIG_FILE = process.env.HUE_CONFIG || path.join(os.homedir(), '.radar-hue.json');
+const STATE_FILE = process.env.HUE_STATE || path.join(os.homedir(), '.radar-hue-state.json');
 const LIGHTS_PORT = Number(process.env.LIGHTS_PORT || 10005);
 const RADAR_PORT = Number(process.env.PORT || 10004);
 const NAME_FILTER = (process.env.HUE_LIGHTS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
@@ -157,10 +172,45 @@ function restoreBody(s) {
   return body;
 }
 
+// Send a batch of {id, body} commands at once, then retry any the bridge rejected (it drops
+// commands if it's sent too many too fast). Used for restores, where a dropped command would
+// leave a light stuck on the flash colour.
+async function putEach(cfg, items, retries = 1) {
+  let pending = items;
+  for (let attempt = 0; attempt <= retries && pending.length; attempt++) {
+    if (attempt) await sleep(700);
+    const results = await Promise.allSettled(pending.map((i) => putLight(cfg, i.id, i.body)));
+    pending = pending.filter((_, idx) => results[idx].status === 'rejected');
+    if (pending.length && attempt === retries) {
+      pending.forEach((i) => log(`could not restore light ${i.id} - try: node ${process.argv[1]} restore preflash`));
+    }
+  }
+}
+
+async function restoreLights(cfg, snaps) {
+  await putEach(cfg, snaps.map((s) => ({ id: s.id, body: restoreBody(s) })));
+  const wereOff = snaps.filter((s) => !s.on);
+  if (wereOff.length) {
+    await sleep(Math.max(500, wereOff.length * 110));
+    await putEach(cfg, wereOff.map((s) => ({ id: s.id, body: { on: { on: false } } })));
+  }
+}
+
+function readState() {
+  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
+}
+
+function writeState(name, snaps) {
+  const all = readState();
+  all[name] = { saved: new Date().toISOString(), lights: snaps };
+  fs.writeFileSync(STATE_FILE, JSON.stringify(all, null, 2), { mode: 0o600 });
+}
+
 async function flashLights(cfg) {
   const lights = selectLights(await fetchLights(cfg));
   if (!lights.length) { log('no lights to flash (none matched, or all are off - see HUE_INCLUDE_OFF)'); return 0; }
   const snaps = lights.map(snapshot);
+  try { writeState('preflash', snaps); } catch (err) { log('could not save preflash state:', err.message); }
 
   // The bridge takes roughly 10 light commands a second, so stretch each phase for big setups.
   const phaseMs = Math.max(STEP_MS, snaps.length * 110);
@@ -175,12 +225,7 @@ async function flashLights(cfg) {
     }
   } finally {
     // Always put things back, even if a command above failed.
-    await Promise.allSettled(snaps.map((s) => putLight(cfg, s.id, restoreBody(s))));
-    const wereOff = snaps.filter((s) => !s.on);
-    if (wereOff.length) {
-      await sleep(Math.max(500, wereOff.length * 110));
-      await Promise.allSettled(wereOff.map((s) => putLight(cfg, s.id, { on: { on: false } })));
-    }
+    await restoreLights(cfg, snaps);
     log('lights restored');
   }
   return snaps.length;
@@ -224,6 +269,139 @@ async function cmdTest() {
   console.log(n ? `Flashed ${n} light(s).` : 'Nothing flashed - see the message above.');
 }
 
+// --- manual control ----------------------------------------------------------------------------
+const COLOURS = {
+  red: '#ff0000', orange: '#ff7a00', yellow: '#ffe000', green: '#00ff00', cyan: '#00ffff',
+  blue: '#0000ff', purple: '#8000ff', pink: '#ff4da6', magenta: '#ff00ff',
+};
+const WHITES = { warm: 400, neutral: 300, cool: 220, daylight: 153 }; // mirek: bigger = warmer
+
+// sRGB hex -> CIE xy, using the same conversion Philips documents. The bridge pulls anything
+// outside a light's own gamut back to the nearest colour it can actually make.
+function hexToXy(word) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(word);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const lin = (v) => { v /= 255; return v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92; };
+  const r = lin((n >> 16) & 255), g = lin((n >> 8) & 255), b = lin(n & 255);
+  const X = r * 0.664511 + g * 0.154324 + b * 0.162028;
+  const Y = r * 0.283881 + g * 0.668433 + b * 0.047685;
+  const Z = r * 0.000088 + g * 0.07231 + b * 0.986039;
+  const sum = X + Y + Z;
+  return sum === 0 ? null : { x: +(X / sum).toFixed(4), y: +(Y / sum).toFixed(4) };
+}
+
+function matchLights(all, target) {
+  if (!target || target.toLowerCase() === 'all') return all;
+  const t = target.toLowerCase();
+  const exact = all.filter((l) => lightName(l).toLowerCase() === t || l.id === target);
+  if (exact.length) return exact;
+  return all.filter((l) => lightName(l).toLowerCase().includes(t));
+}
+
+function parseBrightness(word) {
+  const n = Number(word);
+  if (!Number.isFinite(n) || n < 0 || n > 100) throw new Error(`brightness must be 0-100, got '${word}'`);
+  return n;
+}
+
+// makeBody(light) returns a request body, or a string explaining why this light is skipped.
+async function applyToLights(target, makeBody) {
+  const cfg = getConfig();
+  const lights = matchLights(await fetchLights(cfg), target);
+  if (!lights.length) throw new Error(`No light matches '${target}'. Run 'list' to see the names.`);
+  for (const l of lights) {
+    const body = makeBody(l);
+    if (typeof body === 'string') { console.log(`  ${lightName(l)}: skipped (${body})`); continue; }
+    await putLight(cfg, l.id, body);
+    console.log(`  ${lightName(l)}: ok`);
+    await sleep(110); // stay under the bridge's ~10 commands a second
+  }
+}
+
+const withBrightness = (body, bri) => (bri == null ? body : { ...body, dimming: { brightness: bri } });
+
+async function cmdSwitch(target, on) {
+  await applyToLights(target, () => ({ on: { on }, dynamics: { duration: 300 } }));
+}
+
+async function cmdColor(target, colour, briWord) {
+  if (!target || !colour) throw new Error(`Usage: color <light> <colour> [brightness]   (colours: ${Object.keys(COLOURS).join(' ')} or #hex)`);
+  if (WHITES[colour.toLowerCase()]) return cmdWhite(target, [colour, briWord].filter(Boolean));
+  const xy = hexToXy(COLOURS[colour.toLowerCase()] || colour);
+  if (!xy) throw new Error(`Unknown colour '${colour}'. Use: ${Object.keys(COLOURS).join(' ')} or a hex code like #ff8800`);
+  const bri = briWord == null ? null : parseBrightness(briWord);
+  await applyToLights(target, (l) =>
+    l.color ? withBrightness({ on: { on: true }, color: { xy }, dynamics: { duration: 400 } }, bri) : "can't do colours");
+  return undefined;
+}
+
+async function cmdWhite(target, rest = []) {
+  if (!target) throw new Error('Usage: white <light> [warm|neutral|cool|daylight|2700k|mirek] [brightness]');
+  let mirek = WHITES.warm;
+  let bri = null;
+  for (const a of rest) {
+    const w = a.toLowerCase();
+    if (WHITES[w]) mirek = WHITES[w];
+    else if (/^\d{4,5}k$/.test(w)) mirek = Math.round(1e6 / parseInt(w, 10));
+    else if (Number.isFinite(Number(w)) && Number(w) > 100) mirek = Math.round(Number(w));
+    else if (Number.isFinite(Number(w))) bri = parseBrightness(w);
+    else throw new Error(`Don't understand '${a}'. Use warm/neutral/cool/daylight, 2700k, a mirek value, or a brightness 0-100.`);
+  }
+  await applyToLights(target, (l) => {
+    if (!l.color_temperature) return "can't do adjustable white";
+    const schema = l.color_temperature.mirek_schema || {};
+    const m = Math.min(schema.mirek_maximum || 500, Math.max(schema.mirek_minimum || 153, mirek));
+    return withBrightness({ on: { on: true }, color_temperature: { mirek: m }, dynamics: { duration: 400 } }, bri);
+  });
+}
+
+async function cmdBrightness(target, word) {
+  if (!target || word == null) throw new Error('Usage: brightness <light> <0-100>');
+  const bri = parseBrightness(word);
+  await applyToLights(target, (l) => {
+    if (!l.dimming) return "can't dim";
+    return bri === 0 ? { on: { on: false } } : { on: { on: true }, dimming: { brightness: bri }, dynamics: { duration: 300 } };
+  });
+}
+
+async function cmdState(target) {
+  if (!target) throw new Error('Usage: state <light>   (part of a name, or "all")');
+  const cfg = getConfig();
+  const lights = matchLights(await fetchLights(cfg), target);
+  if (!lights.length) throw new Error(`No light matches '${target}'. Run 'list' to see the names.`);
+  for (const l of lights) {
+    console.log(`=== ${lightName(l)} (${l.id}) ===`);
+    console.log(JSON.stringify(l, null, 2));
+  }
+}
+
+async function cmdSave(name = 'default') {
+  const cfg = getConfig();
+  const snaps = (await fetchLights(cfg)).map(snapshot);
+  writeState(name, snaps);
+  console.log(`Saved ${snaps.length} light(s) as '${name}' in ${STATE_FILE}`);
+}
+
+async function cmdRestore(name = 'default', target) {
+  const cfg = getConfig();
+  const all = readState();
+  if (!all[name]) {
+    const have = Object.keys(all);
+    throw new Error(`Nothing saved as '${name}'.` + (have.length ? ` Saved names: ${have.join(', ')}` : ' Nothing has been saved yet - use: save'));
+  }
+  const t = target && target.toLowerCase() !== 'all' ? target.toLowerCase() : null;
+  const snaps = all[name].lights.filter((s) => !t || s.name.toLowerCase().includes(t));
+  if (!snaps.length) throw new Error(`No saved light matches '${target}'.`);
+  await restoreLights(cfg, snaps);
+  console.log(`Restored ${snaps.length} light(s) from '${name}' (saved ${all[name].saved}): ${snaps.map((s) => s.name).join(', ')}`);
+}
+
+function cmdHelp() {
+  const src = fs.readFileSync(__filename, 'utf8');
+  console.log(src.slice(src.indexOf('/*') + 3, src.indexOf('*/')).replace(/^ \* ?/gm, '').trim());
+}
+
 function cmdServe() {
   const cfg = getConfig(); // fail early with a clear message if not paired
   let busy = false;
@@ -262,13 +440,22 @@ function cmdServe() {
 
 // --- main --------------------------------------------------------------------------------------
 (async () => {
-  const [cmd = 'serve', arg] = process.argv.slice(2);
+  const [cmd = 'serve', ...args] = process.argv.slice(2);
   try {
-    if (cmd === 'pair') await cmdPair(arg);
+    if (cmd === 'pair') await cmdPair(args[0]);
     else if (cmd === 'list') await cmdList();
     else if (cmd === 'test') await cmdTest();
     else if (cmd === 'serve') cmdServe();
-    else throw new Error(`Unknown command '${cmd}'. Use: pair <bridge-ip> | list | test | serve`);
+    else if (cmd === 'on') await cmdSwitch(args[0], true);
+    else if (cmd === 'off') await cmdSwitch(args[0], false);
+    else if (cmd === 'color' || cmd === 'colour') await cmdColor(args[0], args[1], args[2]);
+    else if (cmd === 'white') await cmdWhite(args[0], args.slice(1));
+    else if (cmd === 'brightness' || cmd === 'bri') await cmdBrightness(args[0], args[1]);
+    else if (cmd === 'state') await cmdState(args[0]);
+    else if (cmd === 'save') await cmdSave(args[0]);
+    else if (cmd === 'restore') await cmdRestore(args[0], args[1]);
+    else if (cmd === 'help' || cmd === '--help' || cmd === '-h') cmdHelp();
+    else throw new Error(`Unknown command '${cmd}'. Run 'help' for the list.`);
   } catch (err) {
     console.error(`Error: ${err.message}`);
     process.exit(1);
