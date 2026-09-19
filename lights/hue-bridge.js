@@ -15,12 +15,17 @@
  *   node lights/hue-bridge.js serve              run the local server (default; this is what the service runs)
  *
  * Manual control (<light> is part of a light's name, e.g. "strip", or "all"):
- *   on [light]   |   off [light]
+ *   on [light]   |   off [light]   |   toggle [light]
  *   color <light> <colour> [brightness]      colour = red orange yellow green cyan blue purple pink
  *                                            magenta, or a hex code like #ff8800
  *   white <light> [tone] [brightness]        tone = warm neutral cool daylight, a temperature like
  *                                            2700k, or a mirek value (153-500). Default: warm
  *   brightness <light> <0-100>               (0 switches it off)
+ *   dim <light> [amount]   |   bright <light> [amount]    step brightness down/up (default 15)
+ *   blink <light> [colour] [times]           manual test flash on any light, any colour - doesn't
+ *                                            touch HUE_LIGHTS/HUE_INCLUDE_OFF/HUE_MAX_NM filtering,
+ *                                            so it works even on lights the military alert skips.
+ *                                            Restores the light's prior state afterwards.
  *   state <light>                            everything the bridge reports for that light
  *   save [name]  |  restore [name] [light]   snapshot / put back all lights (name defaults to "default").
  *                                            Every flash first saves the lights as "preflash", so a
@@ -413,6 +418,63 @@ async function cmdBrightness(target, word) {
   });
 }
 
+async function cmdToggle(target) {
+  if (!target) throw new Error('Usage: toggle <light>');
+  await applyToLights(target, (l) => ({ on: { on: !(l.on && l.on.on) }, dynamics: { duration: 300 } }));
+}
+
+async function cmdStep(target, word, sign) {
+  if (!target) throw new Error(`Usage: ${sign > 0 ? 'bright' : 'dim'} <light> [amount]`);
+  const step = word != null ? parseBrightness(word) : 15;
+  await applyToLights(target, (l) => {
+    if (!l.dimming) return "can't dim";
+    const current = l.on && l.on.on ? l.dimming.brightness || 0 : 0;
+    const next = Math.min(100, Math.max(0, current + sign * step));
+    return next === 0
+      ? { on: { on: false } }
+      : { on: { on: true }, dimming: { brightness: next }, dynamics: { duration: 300 } };
+  });
+}
+
+// Manual test flash on any light/colour, ignoring the HUE_LIGHTS/HUE_INCLUDE_OFF/HUE_MAX_NM
+// filtering that the military alert path uses - so it also works on lights that filter would
+// skip. Always restores whatever the light was doing before, same as the alert flash does.
+async function cmdBlink(target, colourWord, timesWord) {
+  if (!target) throw new Error('Usage: blink <light> [colour] [times]');
+  const cfg = getConfig();
+  const lights = matchLights(await fetchLights(cfg), target);
+  if (!lights.length) throw new Error(`No light matches '${target}'. Run 'list' to see the names.`);
+
+  const times = timesWord != null ? Math.max(1, parseInt(timesWord, 10) || FLASHES) : FLASHES;
+  let xy = RED_XY;
+  if (colourWord && colourWord.toLowerCase() !== 'red') {
+    const resolved = hexToXy(COLOURS[colourWord.toLowerCase()] || colourWord);
+    if (!resolved) throw new Error(`Unknown colour '${colourWord}'. Use: ${Object.keys(COLOURS).join(' ')} or a hex code like #ff8800`);
+    xy = resolved;
+  }
+
+  const snaps = lights.map(snapshot);
+  const onBody = (l) => (l.color
+    ? { on: { on: true }, dimming: { brightness: 100 }, color: { xy }, dynamics: { duration: 0 } }
+    : { on: { on: true }, dynamics: { duration: 0 } }); // white-only bulb: just blink on/off
+  const phaseMs = Math.max(STEP_MS, snaps.length * 110);
+
+  console.log(`Blinking ${snaps.length} light(s) ${times}x: ${snaps.map((s) => s.name).join(', ')}`);
+  try {
+    for (let i = 0; i < times; i++) {
+      await Promise.allSettled(lights.map((l) => putLight(cfg, l.id, onBody(l))));
+      await sleep(phaseMs);
+      if (i < times - 1) {
+        await Promise.allSettled(lights.map((l) => putLight(cfg, l.id, offBody())));
+        await sleep(phaseMs);
+      }
+    }
+  } finally {
+    await restoreLights(cfg, snaps);
+  }
+  console.log('done');
+}
+
 async function cmdState(target) {
   if (!target) throw new Error('Usage: state <light>   (part of a name, or "all")');
   const cfg = getConfig();
@@ -487,8 +549,10 @@ function cmdServe() {
 }
 
 // --- main --------------------------------------------------------------------------------------
+// No argument at all -> help, not serve. The systemd unit (if you run one) should call this
+// with an explicit "serve" argument rather than relying on a bare invocation defaulting to it.
 (async () => {
-  const [cmd = 'serve', ...args] = process.argv.slice(2);
+  const [cmd = 'help', ...args] = process.argv.slice(2);
   try {
     if (cmd === 'pair') await cmdPair(args[0]);
     else if (cmd === 'list') await cmdList();
@@ -496,9 +560,13 @@ function cmdServe() {
     else if (cmd === 'serve') cmdServe();
     else if (cmd === 'on') await cmdSwitch(args[0], true);
     else if (cmd === 'off') await cmdSwitch(args[0], false);
+    else if (cmd === 'toggle') await cmdToggle(args[0]);
     else if (cmd === 'color' || cmd === 'colour') await cmdColor(args[0], args[1], args[2]);
     else if (cmd === 'white') await cmdWhite(args[0], args.slice(1));
     else if (cmd === 'brightness' || cmd === 'bri') await cmdBrightness(args[0], args[1]);
+    else if (cmd === 'dim') await cmdStep(args[0], args[1], -1);
+    else if (cmd === 'bright' || cmd === 'brighten') await cmdStep(args[0], args[1], 1);
+    else if (cmd === 'blink' || cmd === 'flash') await cmdBlink(args[0], args[1], args[2]);
     else if (cmd === 'state') await cmdState(args[0]);
     else if (cmd === 'save') await cmdSave(args[0]);
     else if (cmd === 'restore') await cmdRestore(args[0], args[1]);
