@@ -169,8 +169,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const isLight =
         category === 'A1' || category === 'A2' ||
         /^(C1[0-9]|C2[0-9]|C3[0-9]|C4[0-9]|C5[0-9]|C6[0-9]|C7[0-9]|C8[0-9]|C9[0-9]|P28|PA1|PA2|PA3|PA4|DA4|DA5|SR2|TB[0-9]|BE[0-9]|SF2|G[A-Z0-9])/.test(type);
+      // (A5 is "Heavy" = airliners, so it is not a military hint - only A6 "High Performance".)
       const isMilitary =
-        category === 'A5' || category === 'A6' ||
+        category === 'A6' ||
         /^(F[0-9]|E[0-9]|T[0-9]|A10|B1|B2|B52|C130|C17|C5M|KC|P8|RC|U2|SR71|MIR|RAF|EUFI|F35|F22|F18|GRIP)/.test(type);
 
       ctx.save();
@@ -1837,12 +1838,13 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         return true;
       }
 
-      // A7 = rotorcraft, A5/A6 = large / high-vortex-large (tankers, AWACS, big fast jets).
-      // drawVectorAircraftSilhouette() already treats A5/A6 as military for the scope icon -
-      // this was missing here, so an aircraft in the hardcoded type/callsign lists' blind spot
-      // (untracked squadron callsign, blank/unlisted type designator, no dbFlags bit set) could
-      // draw with the military icon/colour but never actually trip announceMilitaryAircraft().
-      if (cat === 'A7' || cat === 'A5' || cat === 'A6') return true;
+      // ADS-B emitter categories: A5 = Heavy (>300,000 lb), A6 = High Performance (>5g and
+      // >400 kt), A7 = rotorcraft. A6/A7 are a reasonable "no other evidence" military hint
+      // (fast jets / helicopters). A5 is deliberately NOT here: it is every widebody airliner
+      // (777, 787, A330, A350, A380...), and treating it as military filled the MIL panel with
+      // airline flights and fired false alerts. Genuinely military heavies (C-17, KC-135, E-3,
+      // A400M, tankers...) are still caught above by type, callsign prefix or the dbFlags bit.
+      if (cat === 'A7' || cat === 'A6') return true;
 
       return false;
     }
