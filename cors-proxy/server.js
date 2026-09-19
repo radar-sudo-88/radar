@@ -105,7 +105,7 @@ function serveStatic(req, res, pathname) {
       return;
     }
     const ext = path.extname(filePath).toLowerCase();
-    send(res, 200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream' }, data);
+    send(res, 200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' }, data);
   });
 }
 

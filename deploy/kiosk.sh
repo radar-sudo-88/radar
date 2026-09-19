@@ -8,8 +8,9 @@
 #                    to skip the internet round trip and keep working if the tunnel is down.
 #   PORT             the local server's port, used for the wait below (default 10004)
 #   KIOSK_WAIT_SECS  how long to wait for things to come up before opening anyway (default 90)
-#   KIOSK_AUTOSTART  1 (default) opens the page with ?autostart=1 so it starts by itself, with no
-#                    click and no extension needed. Set to 0 to get the tap-to-start overlay.
+#
+# The page is always opened with ?autostart=1, so the feed starts by itself - no click and no
+# extension needed.
 #
 # Deliberately does NOT pass --user-data-dir or --incognito, so Chromium uses your normal profile
 # and any extensions you've installed on the Pi (e.g. an auto-click extension) still load.
@@ -19,7 +20,6 @@ set -u
 URL="${KIOSK_URL:-https://aero-sentry.co.uk}"
 PORT="${PORT:-10004}"
 WAIT_SECS="${KIOSK_WAIT_SECS:-90}"
-AUTOSTART="${KIOSK_AUTOSTART:-1}"
 
 BROWSER="$(command -v chromium || command -v chromium-browser || true)"
 [ -n "$BROWSER" ] || { echo "kiosk: chromium not found (sudo apt install chromium)" >&2; exit 1; }
@@ -42,13 +42,11 @@ case "$URL" in
 esac
 
 # What the browser actually opens (the waits above use the plain URL).
-OPEN_URL="$URL"
-if [ "$AUTOSTART" = 1 ]; then
-  case "$URL" in
-    *\?*) OPEN_URL="$URL&autostart=1" ;;
-    *)    OPEN_URL="$URL?autostart=1" ;;
-  esac
-fi
+case "$URL" in
+  *autostart=*) OPEN_URL="$URL" ;;            # already set in KIOSK_URL - leave it alone
+  *\?*)         OPEN_URL="$URL&autostart=1" ;;
+  *)            OPEN_URL="$URL?autostart=1" ;;
+esac
 
 # A wall board often loses power without a clean shutdown; Chromium then shows a "didn't shut
 # down correctly - restore pages?" bubble on next start. Mark the last session as clean first.
