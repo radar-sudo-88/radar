@@ -14,7 +14,8 @@
  *   node lights/hue-bridge.js test               flash right now (checks the whole chain, ignores cooldown)
  *   node lights/hue-bridge.js serve              run the local server (default; this is what the service runs)
  *
- * Manual control (<light> is part of a light's name, e.g. "strip", or "all"):
+ * Manual control (<light> is part of a light's name, e.g. "strip", or "all"; comma-separate
+ * several, e.g. "shelf,lamp" - quote it if any of the names contain spaces):
  *   on [light]   |   off [light]   |   toggle [light]
  *   color <light> <colour> [brightness]      colour = red orange yellow green cyan blue purple pink
  *                                            magenta, or a hex code like #ff8800
@@ -346,6 +347,13 @@ function hexToXy(word) {
 
 function matchLights(all, target) {
   if (!target || target.toLowerCase() === 'all') return all;
+  if (target.includes(',')) {
+    const seen = new Map();
+    for (const part of target.split(',').map((s) => s.trim()).filter(Boolean)) {
+      for (const l of matchLights(all, part)) seen.set(l.id, l);
+    }
+    return [...seen.values()];
+  }
   const t = target.toLowerCase();
   const exact = all.filter((l) => lightName(l).toLowerCase() === t || l.id === target);
   if (exact.length) return exact;
