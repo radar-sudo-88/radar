@@ -9,10 +9,20 @@
  *
  * Talks to the Hue bridge over your LAN with the local v2 API. No cloud, no extra npm packages.
  *
- *   node lights/hue-bridge.js pair <bridge-ip>   one-off: press the bridge's link button, then run this
- *   node lights/hue-bridge.js list               show your lights and which of them would flash
- *   node lights/hue-bridge.js test               flash right now (checks the whole chain, ignores cooldown)
- *   node lights/hue-bridge.js serve              run the local server (default; this is what the service runs)
+ *   node lights/hue-bridge.js pair <bridge-ip> [profile]   one-off: press the bridge's link button, then
+ *                                                          run this. profile defaults to "default" - pair
+ *                                                          a second Hue-API bridge (e.g. a diyHue instance)
+ *                                                          under its own name, e.g. "pair 192.168.1.55 diyhue"
+ *   node lights/hue-bridge.js profiles            list the bridges you've paired
+ *   node lights/hue-bridge.js list                show your lights and which of them would flash
+ *   node lights/hue-bridge.js test                flash right now (checks the whole chain, ignores cooldown)
+ *   node lights/hue-bridge.js serve               run the local server (default; this is what the service
+ *                                                  runs - always uses the "default" profile, regardless of
+ *                                                  HUE_PROFILE, so a second bridge never gets pulled into
+ *                                                  military/emergency alerts by accident)
+ *
+ * Every command below talks to the "default" paired bridge unless you set HUE_PROFILE=<name> first, e.g.
+ *   HUE_PROFILE=diyhue node lights/hue-bridge.js on lamp
  *
  * Manual control (<light> is part of a light's name, e.g. "strip", or "all"; comma-separate
  * several, e.g. "shelf,lamp" - quote it if any of the names contain spaces):
@@ -28,13 +38,15 @@
  *                                            so it works even on lights the military alert skips.
  *                                            Restores the light's prior state afterwards.
  *   state <light>                            everything the bridge reports for that light
- *   save [name]  |  restore [name] [light]   snapshot / put back all lights (name defaults to "default").
+ *   save [snapshot]  |  restore [snapshot] [light]   snapshot/put back all lights (name defaults to
+ *                                            "default" - unrelated to the bridge profile name above).
  *                                            Every flash first saves the lights as "preflash", so a
  *                                            flash that goes wrong can be undone: restore preflash
  *   help                                     this list
  *
- * The bridge address and app key are stored in ~/.radar-hue.json (mode 600, outside the repo so it
- * can never be committed). HUE_BRIDGE_IP / HUE_APP_KEY env vars override it.
+ * Each paired bridge's address and app key are stored in ~/.radar-hue.json (mode 600, outside the repo
+ * so it can never be committed), keyed by profile name. HUE_BRIDGE_IP / HUE_APP_KEY together override
+ * profile lookup entirely, for a one-off bridge or to pin an exact bridge in a systemd unit.
  *
  * Optional env vars:
  *   LIGHTS_PORT       port for this server (default 10005)
@@ -89,14 +101,31 @@ function readConfigFile() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; }
 }
 
-function getConfig() {
-  const file = readConfigFile();
-  const cfg = {
-    bridge: process.env.HUE_BRIDGE_IP || file.bridge,
-    key: process.env.HUE_APP_KEY || file.key,
-  };
-  if (!cfg.bridge || !cfg.key) {
-    throw new Error(`Not paired yet. Press the link button on the Hue bridge, then run: node ${process.argv[1]} pair <bridge-ip>`);
+// Config file holds named bridge profiles - { bridges: { default: {bridge,key}, diyhue: {...} } } -
+// so one Pi can talk to more than one Hue-API bridge (a real Hue bridge plus e.g. a diyHue instance
+// used for something unrelated). Old flat-format files ({bridge,key}, no "bridges" key) are read as
+// if they were { bridges: { default: {bridge,key} } } - no migration needed, nothing breaks.
+function getProfiles(file) {
+  if (file.bridges) return file.bridges;
+  if (file.bridge && file.key) return { default: { bridge: file.bridge, key: file.key } };
+  return {};
+}
+
+function getConfig(profileName) {
+  // HUE_BRIDGE_IP/HUE_APP_KEY together are a full override of the profile system, for a true
+  // one-off or for a systemd unit that wants to pin an exact bridge without touching the config
+  // file at all. Otherwise pick a named profile: HUE_PROFILE env var, an explicit argument, or
+  // "default".
+  if (process.env.HUE_BRIDGE_IP && process.env.HUE_APP_KEY) {
+    return { bridge: process.env.HUE_BRIDGE_IP, key: process.env.HUE_APP_KEY };
+  }
+  const name = profileName || process.env.HUE_PROFILE || 'default';
+  const profiles = getProfiles(readConfigFile());
+  const cfg = profiles[name];
+  if (!cfg || !cfg.bridge || !cfg.key) {
+    const known = Object.keys(profiles);
+    const knownMsg = known.length ? ` Known profiles: ${known.join(', ')}.` : '';
+    throw new Error(`Profile '${name}' isn't paired yet.${knownMsg} Press the link button on that bridge, then run: node ${process.argv[1]} pair <bridge-ip> ${name === 'default' ? '' : name}`.trim());
   }
   return cfg;
 }
@@ -286,17 +315,20 @@ async function flashLights(cfg) {
 }
 
 // --- commands ----------------------------------------------------------------------------------
-async function cmdPair(bridge) {
-  if (!bridge) throw new Error(`Usage: node ${process.argv[1]} pair <bridge-ip>`);
-  console.log(`Press the round link button on the Hue bridge now. Waiting up to 60 seconds...`);
+async function cmdPair(bridge, profileName) {
+  if (!bridge) throw new Error(`Usage: node ${process.argv[1]} pair <bridge-ip> [profile-name]`);
+  const name = profileName || 'default';
+  console.log(`Press the round link button on the Hue bridge now (pairing as profile "${name}"). Waiting up to 60 seconds...`);
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
     const res = await hueRequest(bridge, null, 'POST', '/api', { devicetype: 'radar#pi', generateclientkey: true });
     const first = Array.isArray(res) ? res[0] : null;
     if (first && first.success && first.success.username) {
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify({ bridge, key: first.success.username }, null, 2), { mode: 0o600 });
+      const file = readConfigFile();
+      const bridges = { ...getProfiles(file), [name]: { bridge, key: first.success.username } };
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify({ bridges }, null, 2), { mode: 0o600 });
       fs.chmodSync(CONFIG_FILE, 0o600);
-      console.log(`Paired. Saved to ${CONFIG_FILE}. Try:  node ${process.argv[1]} list`);
+      console.log(`Paired as "${name}". Saved to ${CONFIG_FILE}. Try:  ${name === 'default' ? '' : `HUE_PROFILE=${name} `}node ${process.argv[1]} list`);
       return;
     }
     if (first && first.error && first.error.type !== 101) throw new Error(`Bridge said: ${first.error.description}`);
@@ -319,7 +351,9 @@ async function cmdList() {
 }
 
 async function cmdTest() {
-  const n = await flashLights(getConfig());
+  // Same profile pin as cmdServe() - this is meant to test the real alert path, which always
+  // uses "default", not whatever HUE_PROFILE happens to be set in the current shell.
+  const n = await flashLights(getConfig('default'));
   console.log(n ? `Flashed ${n} light(s).` : 'Nothing flashed - see the message above.');
 }
 
@@ -521,7 +555,10 @@ function cmdHelp() {
 }
 
 function cmdServe() {
-  const cfg = getConfig(); // fail early with a clear message if not paired
+  // Always the "default" profile, ignoring HUE_PROFILE - the alert flasher must never accidentally
+  // start pointing at a second bridge (e.g. diyhue) just because that env var is set in the shell
+  // someone happens to launch this from.
+  const cfg = getConfig('default'); // fail early with a clear message if not paired
   let busy = false;
   let lastStart = 0;
 
@@ -562,7 +599,13 @@ function cmdServe() {
 (async () => {
   const [cmd = 'help', ...args] = process.argv.slice(2);
   try {
-    if (cmd === 'pair') await cmdPair(args[0]);
+    if (cmd === 'pair') await cmdPair(args[0], args[1]);
+    else if (cmd === 'profiles') {
+      const profiles = getProfiles(readConfigFile());
+      const names = Object.keys(profiles);
+      if (!names.length) console.log('No bridges paired yet. Run: pair <bridge-ip> [profile-name]');
+      else names.forEach((n) => console.log(`  ${n}${n === 'default' ? ' (default)' : ''} - ${profiles[n].bridge}`));
+    }
     else if (cmd === 'list') await cmdList();
     else if (cmd === 'test') await cmdTest();
     else if (cmd === 'serve') cmdServe();
