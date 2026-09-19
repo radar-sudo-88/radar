@@ -551,7 +551,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // announced as an "emergency" like the three real ICAO codes.
       const speechText = isQra
         ? `Alert, alert. The callsign ${callsign} is squawking ${spokenSquawk} - that means ${meaning}.`
-        : `A plane has squawked ${spokenSquawk}.`;
+        : `Emergency, emergency. A plane has squawked ${spokenSquawk} with the callsign ${callsign} - that means ${meaning}.`;
       const utterance = new SpeechSynthesisUtterance(speechText);
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
