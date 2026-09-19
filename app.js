@@ -127,9 +127,18 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     // Home-use kiosk: audio alerts are always on, no mute toggle.
     const audioAlertsEnabled = true;
-    const pulsed35Hexes = new Set();
-    const pulsed5Hexes = new Set();
+    const pulsed35Hexes = new Map(); // hex -> ms timestamp of last chirp, not a plain Set - see hexIsCoolingDown()
+    const pulsed5Hexes = new Map();
     const announcedEmergencyHexes = new Set();
+    // Without this, an aircraft's hex chirps once, ever, then goes silent for the rest of the
+    // page's life - fine for a quick tab but not for a kiosk that runs for days. Re-chirping
+    // after a cooldown lets the same aircraft trigger again on a later pass, while a single
+    // continuous approach still only chirps once (12s poll interval << this cooldown).
+    const CHIRP_REPEAT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+    function hexIsCoolingDown(map, hex) {
+      const last = map.get(hex);
+      return last !== undefined && (Date.now() - last) < CHIRP_REPEAT_COOLDOWN_MS;
+    }
     let audioCtx = null;
     let feedStarted = false;
 
@@ -542,7 +551,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // announced as an "emergency" like the three real ICAO codes.
       const speechText = isQra
         ? `Alert, alert. The callsign ${callsign} is squawking ${spokenSquawk} - that means ${meaning}.`
-        : `Emergency, emergency. A plane has put out ${spokenSquawk} with the callsign ${callsign} - that means ${meaning}.`;
+        : `A plane has squawked ${spokenSquawk}.`;
       const utterance = new SpeechSynthesisUtterance(speechText);
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
@@ -978,9 +987,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const dist = calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
       let triggeredPulse = false;
 
-      if (dist <= 5.0 && !pulsed5Hexes.has(ac.hex)) {
-        pulsed5Hexes.add(ac.hex);
-        pulsed35Hexes.add(ac.hex);
+      if (dist <= 5.0 && !hexIsCoolingDown(pulsed5Hexes, ac.hex)) {
+        pulsed5Hexes.set(ac.hex, Date.now());
+        pulsed35Hexes.set(ac.hex, Date.now());
         triggeredPulse = true;
         playAlertTone();
         triggerRedPulse();
@@ -1011,8 +1020,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         }, 350);
       }
 
-      if (!triggeredPulse && dist <= 35.0 && !pulsed35Hexes.has(ac.hex)) {
-        pulsed35Hexes.add(ac.hex);
+      if (!triggeredPulse && dist <= 35.0 && !hexIsCoolingDown(pulsed35Hexes, ac.hex)) {
+        pulsed35Hexes.set(ac.hex, Date.now());
         playAlertTone();
         triggerRedPulse();
         pingLightBridge(dist);
@@ -2086,6 +2095,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         const emergencyAc = lockedAircraft;
         const sirenMs = playEmergencySiren();
         triggerRedPulse();
+        pingLightBridge(dist);
         // Let the siren play out before the spoken callout so they don't talk over each other.
         setTimeout(() => announceEmergencySquawk(emergencyAc), Math.max(300, sirenMs));
       }
