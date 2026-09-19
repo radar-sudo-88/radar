@@ -351,6 +351,18 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         const warmup = new SpeechSynthesisUtterance('');
         warmup.volume = 0;
         window.speechSynthesis.speak(warmup);
+
+        // Chrome has a known bug where speechSynthesis silently stops firing speak() after
+        // sitting idle for a while (no error, no event - it just never says anything). On a
+        // kiosk that only speaks occasionally (a military pass every so often, an emergency
+        // maybe once a day) that idle gap is exactly when it bites. The standard workaround is
+        // a periodic pause/resume "nudge" so the engine never sits idle long enough to trip it.
+        setInterval(() => {
+          if (!window.speechSynthesis.speaking) {
+            window.speechSynthesis.pause();
+            window.speechSynthesis.resume();
+          }
+        }, 10000);
       }
 
       const overlay = document.getElementById('start-overlay');
@@ -555,6 +567,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const utterance = new SpeechSynthesisUtterance(speechText);
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
+      // See the keep-alive nudge in startFeed() - this cancel() clears any stuck queue from
+      // the same idle bug, so a speak() call right after doesn't join a queue that's silently
+      // stopped draining.
+      window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
     }
 
@@ -1015,6 +1031,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
             const utterance = new SpeechSynthesisUtterance(speechText);
             utterance.rate = 1.0;
             utterance.pitch = 1.0;
+            window.speechSynthesis.cancel(); // clear any stuck queue - see startFeed() keep-alive nudge
             window.speechSynthesis.speak(utterance);
           }
         }, 350);
