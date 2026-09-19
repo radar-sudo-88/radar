@@ -960,6 +960,18 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       return entry && entry.route ? entry.route : null;
     }
 
+    // Local house-lights hook (lights/hue-bridge.js). Only active when this page is being viewed
+    // on the Pi itself (kiosk at localhost) - people on the public site never call it, and the
+    // bridge only listens on 127.0.0.1 so nothing here can reach it from the internet. A no-cors
+    // POST needs no CORS setup; we don't read the reply, and a missing bridge is silently ignored.
+    const LIGHT_BRIDGE_URL = ['localhost', '127.0.0.1'].includes(location.hostname)
+      ? 'http://127.0.0.1:10005/flash' : null;
+    function pingLightBridge(distNM) {
+      if (!LIGHT_BRIDGE_URL) return;
+      fetch(`${LIGHT_BRIDGE_URL}?dist=${distNM.toFixed(1)}`, { method: 'POST', mode: 'no-cors', keepalive: true })
+        .catch(() => {});
+    }
+
     function announceMilitaryAircraft(ac) {
       if (!audioAlertsEnabled) return;
 
@@ -972,6 +984,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         triggeredPulse = true;
         playAlertTone();
         triggerRedPulse();
+        pingLightBridge(dist);
 
         setTimeout(() => {
           if (!audioAlertsEnabled) return;
@@ -1002,6 +1015,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         pulsed35Hexes.add(ac.hex);
         playAlertTone();
         triggerRedPulse();
+        pingLightBridge(dist);
       }
     }
 
