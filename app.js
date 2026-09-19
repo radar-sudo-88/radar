@@ -1849,6 +1849,12 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const dbFlags = ac.dbFlags !== undefined ? ac.dbFlags : (ac.db_flags !== undefined ? ac.db_flags : 0);
       if (dbFlags & 1) {
         if (reg.startsWith('G-') || reg.startsWith('N')) return false;
+        // TEMP DEBUG: dbFlags bit is the only evidence and reg isn't G-/N-, so it's
+        // sailing through the override. Log the raw fields so a reported false
+        // positive can be traced to this branch vs. the A6/A7 branch below.
+        console.warn('[MIL classify] dbFlags bit fired', {
+          flight: ac.flight, hex: ac.hex, type, reg, cat, dbFlags
+        });
         return true;
       }
 
@@ -1858,7 +1864,13 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // (777, 787, A330, A350, A380...), and treating it as military filled the MIL panel with
       // airline flights and fired false alerts. Genuinely military heavies (C-17, KC-135, E-3,
       // A400M, tankers...) are still caught above by type, callsign prefix or the dbFlags bit.
-      if (cat === 'A7' || cat === 'A6') return true;
+      if (cat === 'A7' || cat === 'A6') {
+        // TEMP DEBUG: same as above - trace which category hint fired.
+        console.warn('[MIL classify] category hint fired', {
+          flight: ac.flight, hex: ac.hex, type, reg, cat, dbFlags
+        });
+        return true;
+      }
 
       return false;
     }
