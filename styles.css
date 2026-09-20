@@ -276,13 +276,20 @@
        which are siblings of this) can be nudged a couple of px every so often - see
        cycleBurnInShift() - without disturbing anything else. Same flex layout body gave
        these two directly before this wrapper existed. */
+    /* The nudge uses relative left/top rather than transform on purpose: a transform would make
+       this wrapper its own stacking context, trapping the aircraft-detail panel (inside
+       .radar-wrapper) underneath the fixed corner buttons. Relative offsets shift the UI
+       identically without creating one, so the AI panels can stay above everything. */
     #burn-in-shield {
       display: flex;
       flex-direction: column;
       flex: 1;
       min-height: 0;
       width: 100%;
-      transition: transform 8s linear;
+      position: relative;
+      left: 0;
+      top: 0;
+      transition: left 8s linear, top 8s linear;
     }
 
     .radar-wrapper {
@@ -857,7 +864,7 @@
       position: absolute;
       top: 8px;
       right: 8px;
-      z-index: 5; /* above the canvas (2) and legend (3); inside .radar-wrapper */
+      z-index: 10003; /* AI panels sit above everything, incl. the corner buttons (10002) and overlays (10000/10001) */
       width: min(21rem, calc(100% - 16px));
       max-height: calc(100% - 16px);
       overflow-y: auto;

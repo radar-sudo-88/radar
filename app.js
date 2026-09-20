@@ -610,7 +610,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (!shieldEl) return;
       burnInOffsetIdx = (burnInOffsetIdx + 1) % BURN_IN_OFFSETS.length;
       const [dx, dy] = BURN_IN_OFFSETS[burnInOffsetIdx];
-      shieldEl.style.transform = `translate(${dx}px, ${dy}px)`;
+      // left/top (on a position:relative wrapper), not transform - see the #burn-in-shield CSS.
+      shieldEl.style.left = `${dx}px`;
+      shieldEl.style.top = `${dy}px`;
     }
 
     // ---------------------------------------------------------------------
