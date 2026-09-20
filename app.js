@@ -429,17 +429,16 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     // Array of randomized bonus phrases to prepend or add to speech alerts
     const randomAddonPhrases = [
-      "hold on to your fucking hats boys! it could be a fast one.",
-      "dont pull your willy too hard in excitement now!",
+      "hold on to your hats boys! it could be a fast one.",
+      "dont get too excited now, but there is a",
       "heads up troops, things are getting spicy!",
-      "dont jizz too much in your pants but there is a",
-      "shit's about to get real, we've got a",
+      "brace yourselves, there is a",
+      "buckle up, we've got a",
       "hold my beer, im tracking a",
-      "look alive dumbass, incoming",
-      "no wanking on the job, we've got a",
-      "put your pants back on! we've got a",
-      "is it a bird? is it a plane? no well kind of, its a fucking",
-      "well spank my ass and call me amy as there is a"
+      "look alive team, incoming",
+      "eyes up, we've got a",
+      "stand by everyone, we've got a",
+      "is it a bird? is it a plane? no well kind of, its a"
     ];
 
     function initKioskAudio() {
@@ -504,10 +503,27 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       canvas = document.getElementById('radarCanvas');
       ctx = canvas.getContext('2d');
 
+      // Attached before initMap()/resizeCanvas() below, not after, so nothing is missed if the
+      // container's real final size only settles a moment after this point - see the follow-up
+      // corrections just below too.
+      watchScreenSize();
       initMap();
       resizeCanvas();
-      watchScreenSize();
       buildAltitudeLegend();
+
+      // Kiosk mode (--kiosk) launches already fullscreen - there's no windowed-to-fullscreen
+      // transition to fire a corrective resize event the way there is when testing normally in a
+      // browser window and toggling fullscreen by hand. If the container's real final size
+      // hasn't actually settled yet at the moment initMap()/resizeCanvas() just ran above (a real
+      // race on some kiosk setups, where Chromium is still finishing sizing itself to the
+      // display right as this script starts), the radar circle gets fitted to the wrong - too
+      // small - container size, which makes the circle itself look too big relative to it, and
+      // with no resize event ever coming along afterwards on a kiosk to fix it, it stays wrong
+      // for the rest of the session. These two follow-up corrections catch that without needing
+      // any real resize event at all: one after the next paint (layout is reliably settled by
+      // then) and one a bit later as a second safety net for anything slower still.
+      requestAnimationFrame(resizeCanvas);
+      setTimeout(resizeCanvas, 500);
 
       applyNightMode();
       setInterval(applyNightMode, 60000);
