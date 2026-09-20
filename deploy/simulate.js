@@ -8,6 +8,7 @@
  *   node deploy/simulate.js emergency             squawk 7700
  *   node deploy/simulate.js hijack                squawk 7500
  *   node deploy/simulate.js radiofail             squawk 7600
+ *   node deploy/simulate.js qra                   squawk 7777 (Quick Reaction Alert intercept)
  *   node deploy/simulate.js military              military jet (tests the proximity chirp)
  *   node deploy/simulate.js airliner              ordinary airliner, no alert
  *   node deploy/simulate.js list                  show what's currently injected
@@ -40,10 +41,11 @@ const PRESETS = {
   emergency: { squawk: '7700', flight: 'TESTEMG ', t: 'B738', category: 'A3' },
   hijack:    { squawk: '7500', flight: 'TESTHJK ', t: 'B738', category: 'A3' },
   radiofail: { squawk: '7600', flight: 'TESTCOM ', t: 'B738', category: 'A3' },
+  qra:       { squawk: '7777', flight: 'TESTQRA ', t: 'EUFI', category: 'A5' },
   military:  { squawk: '4321', flight: 'TESTMIL ', t: 'F35',  category: 'A5' },
   airliner:  { squawk: '2000', flight: 'TESTAIR ', t: 'B738', category: 'A3' },
 };
-const ALIASES = { '7700': 'emergency', '7500': 'hijack', '7600': 'radiofail', mil: 'military' };
+const ALIASES = { '7700': 'emergency', '7500': 'hijack', '7600': 'radiofail', '7777': 'qra', mil: 'military' };
 
 const DEFAULT_LAT = 52.9529; // same as server.js's default
 const DEFAULT_LON = -0.9547;
@@ -186,7 +188,7 @@ async function main() {
   }
 
   const presetName = PRESETS[cmd] ? cmd : ALIASES[cmd];
-  if (!presetName) die(`unknown command "${cmd}" (emergency hijack radiofail military airliner list clear)`);
+  if (!presetName) die(`unknown command "${cmd}" (emergency hijack radiofail qra military airliner list clear)`);
   const preset = PRESETS[presetName];
 
   if (opts.postcode) {
