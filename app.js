@@ -60,36 +60,84 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       return `Station: ${Math.abs(lat).toFixed(4)}° ${latDir}, ${Math.abs(lon).toFixed(4)}° ${lonDir}`;
     }
 
-    async function resolveStationCoords() {
-      const rawSegment = extractPostcodeFromPath();
-      if (!rawSegment) return;
+    // --- Cookies (postcode only) -------------------------------------------
+    function setCookie(name, value, days) {
+      const expires = new Date(Date.now() + days * 86400000).toUTCString();
+      document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`;
+    }
+    function getCookie(name) {
+      const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+      return match ? decodeURIComponent(match[1]) : null;
+    }
+    const POSTCODE_COOKIE = 'radar_postcode';
 
-      const postcode = normalizePostcode(rawSegment);
-      if (!postcode) {
-        console.warn('[STATION] URL segment after /radar/ is not a plausible UK postcode, keeping default:', rawSegment);
-        return;
-      }
-
+    // Shared by the URL-based override below, the saved-cookie lookup, and the manual
+    // postcode-entry form - one place that actually talks to postcodes.io.
+    async function geocodePostcode(rawInput) {
+      const postcode = normalizePostcode(rawInput);
+      if (!postcode) return { error: 'not-a-postcode' };
       try {
         const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`, {
           headers: { Accept: 'application/json' },
         });
-        if (!res.ok) {
-          console.warn('[STATION] Postcode lookup failed, keeping default coordinates:', postcode, res.status);
-          return;
-        }
+        if (!res.ok) return { error: 'lookup-failed' };
         const data = await res.json();
         const result = data && data.result;
         if (!result || !Number.isFinite(result.latitude) || !Number.isFinite(result.longitude)) {
-          console.warn('[STATION] Postcode lookup returned no usable result, keeping default coordinates:', postcode);
+          return { error: 'no-result' };
+        }
+        return { postcode, lat: result.latitude, lon: result.longitude };
+      } catch (err) {
+        return { error: 'network' };
+      }
+    }
+
+    // Set once resolveStationCoords() finishes with neither a URL postcode nor a saved cookie to
+    // go on - i.e. a genuine first visit. startFeed() checks this and shows the postcode-entry
+    // overlay instead of proceeding, before ever touching the hardcoded default coordinates.
+    let needsPostcodePrompt = false;
+
+    async function resolveStationCoords() {
+      const rawSegment = extractPostcodeFromPath();
+      if (rawSegment) {
+        const result = await geocodePostcode(rawSegment);
+        if (!result.error) {
+          userConfig.lat = result.lat;
+          userConfig.lon = result.lon;
+          setCookie(POSTCODE_COOKIE, result.postcode, 365);
+          console.log(`[STATION] Centred on ${result.postcode} (${result.lat}, ${result.lon}) from URL`);
           return;
         }
-        userConfig.lat = result.latitude;
-        userConfig.lon = result.longitude;
-        console.log(`[STATION] Centred on ${postcode} (${result.latitude}, ${result.longitude})`);
-      } catch (err) {
-        console.warn('[STATION] Postcode lookup errored, keeping default coordinates:', postcode, err);
+        console.warn('[STATION] URL segment postcode lookup failed, falling back:', rawSegment, result.error);
+        // Fall through - an unmatched/bad URL postcode still gives the saved cookie (or the
+        // first-visit prompt) a chance, rather than silently keeping the hardcoded default.
       }
+
+      const cookiePostcode = getCookie(POSTCODE_COOKIE);
+      if (cookiePostcode) {
+        const result = await geocodePostcode(cookiePostcode);
+        if (!result.error) {
+          userConfig.lat = result.lat;
+          userConfig.lon = result.lon;
+          console.log(`[STATION] Centred on ${result.postcode} (${result.lat}, ${result.lon}) from saved location`);
+          return;
+        }
+        // A blip on a postcode that worked before shouldn't force a re-prompt every visit -
+        // just keep the hardcoded default for this one load and try again next time.
+        console.warn('[STATION] Saved postcode lookup failed, keeping default coordinates:', cookiePostcode, result.error);
+        return;
+      }
+
+      // No URL postcode, no saved cookie - this is a first visit. Don't silently fall back to
+      // the hardcoded default; startFeed() will show the postcode-entry overlay instead.
+      // Exception: ?autostart=1 is the unattended kiosk launcher (deploy/kiosk.sh) - it has no
+      // one present to answer a prompt, so it keeps the hardcoded default silently, same as
+      // before this feature existed.
+      if (new URLSearchParams(window.location.search).get('autostart') === '1') {
+        console.log('[STATION] No saved postcode yet, but autostart=1 - keeping default coordinates.');
+        return;
+      }
+      needsPostcodePrompt = true;
     }
 
     // Kicked off immediately at script load - this is a plain network
@@ -98,6 +146,77 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // very first render is already centred correctly instead of snapping
     // over afterwards.
     const stationReadyPromise = resolveStationCoords();
+
+    // Re-centres everything that depends on userConfig.lat/lon: the Leaflet map, the range
+    // circle, the cached projection the canvas radar sweep uses, and the status-bar label. Safe
+    // to call before the map exists yet (first-visit prompt, before startFeed() has run) - it
+    // just updates userConfig in that case, and initMap() picks up the new values when it runs.
+    function recenterStation(lat, lon) {
+      userConfig.lat = lat;
+      userConfig.lon = lon;
+      if (map && radarCircle) {
+        map.setView([lat, lon], 10);
+        radarCircle.setLatLng([lat, lon]);
+        map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
+        recomputeMapProjectionCache();
+      }
+      const statusBar = document.getElementById('status-bar');
+      if (statusBar) statusBar.textContent = formatStationLabel(lat, lon);
+    }
+
+    // --- Postcode-entry overlay (first visit, and the corner "change location" button) -------
+    function showPostcodeOverlay(prefill) {
+      const overlay = document.getElementById('postcode-overlay');
+      const input = document.getElementById('postcode-input');
+      const err = document.getElementById('postcode-error');
+      if (!overlay) return;
+      if (input) input.value = prefill || '';
+      if (err) err.style.display = 'none';
+      overlay.classList.remove('hidden');
+      if (input) setTimeout(() => input.focus(), 50);
+    }
+    function hidePostcodeOverlay() {
+      const overlay = document.getElementById('postcode-overlay');
+      if (overlay) overlay.classList.add('hidden');
+    }
+
+    async function handlePostcodeSubmit(e) {
+      e.preventDefault();
+      const input = document.getElementById('postcode-input');
+      const err = document.getElementById('postcode-error');
+      const submitBtn = e.target.querySelector('button[type="submit"]');
+      const raw = input ? input.value.trim() : '';
+      if (!raw) return;
+
+      if (submitBtn) submitBtn.disabled = true;
+      const result = await geocodePostcode(raw);
+      if (submitBtn) submitBtn.disabled = false;
+
+      if (result.error) {
+        if (err) {
+          err.textContent = result.error === 'not-a-postcode'
+            ? "That doesn't look like a UK postcode."
+            : "Couldn't find that postcode - double check it and try again.";
+          err.style.display = 'block';
+        }
+        return;
+      }
+
+      setCookie(POSTCODE_COOKIE, result.postcode, 365);
+      needsPostcodePrompt = false;
+      hidePostcodeOverlay();
+
+      if (feedStarted) {
+        // "Change location" after the radar's already running - recentre live.
+        recenterStation(result.lat, result.lon);
+      } else {
+        // First-visit path: this submit click is itself the user gesture the browser needs to
+        // unlock audio/speech, same as tapping the normal start-overlay would have been.
+        userConfig.lat = result.lat;
+        userConfig.lon = result.lon;
+        startFeed();
+      }
+    }
 
     let map = null;
     let canvas = null;
@@ -335,13 +454,27 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // Runs on the first user gesture (tap/click on the start overlay). Browsers require a
     // real user gesture before AudioContext or SpeechSynthesis will produce sound, so nothing
     // in announceMilitaryAircraft() can reliably fire until this has run at least once.
+    let startRequested = false;
     async function startFeed() {
-      if (feedStarted) return;
-      feedStarted = true;
+      if (feedStarted || startRequested) return;
+      startRequested = true;
 
       // Make sure any postcode-based station override (see resolveStationCoords
       // above) has finished before the map/radar are built around userConfig.
       await stationReadyPromise;
+
+      if (needsPostcodePrompt) {
+        // First-ever visit, no URL postcode and no saved cookie - ask before doing anything
+        // else. handlePostcodeSubmit() calls startFeed() again once a postcode is saved, and
+        // by then needsPostcodePrompt is false so this branch is skipped the second time.
+        startRequested = false;
+        const overlay = document.getElementById('start-overlay');
+        if (overlay) overlay.classList.add('hidden');
+        showPostcodeOverlay();
+        return;
+      }
+
+      feedStarted = true;
       const statusBar = document.getElementById('status-bar');
       if (statusBar) statusBar.textContent = formatStationLabel(userConfig.lat, userConfig.lon);
 
@@ -2439,6 +2572,15 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     document.getElementById('start-overlay').addEventListener('click', startFeed);
     document.getElementById('start-overlay').addEventListener('touchstart', startFeed);
+
+    // Postcode-entry overlay: first-visit prompt (see resolveStationCoords/startFeed above) and
+    // the corner "change location" button, both any time after that too.
+    const postcodeForm = document.getElementById('postcode-form');
+    if (postcodeForm) postcodeForm.addEventListener('submit', handlePostcodeSubmit);
+    const postcodeChangeBtn = document.getElementById('postcode-change-btn');
+    if (postcodeChangeBtn) {
+      postcodeChangeBtn.addEventListener('click', () => showPostcodeOverlay(getCookie(POSTCODE_COOKIE) || ''));
+    }
 
     // Unattended kiosk: the Pi's launcher (deploy/kiosk.sh) opens the page with ?autostart=1 so
     // it starts by itself instead of waiting for a tap. Normal visitors never see this - without

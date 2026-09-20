@@ -26,6 +26,22 @@
     <div class="start-sub">Tap or click anywhere to start the feed and enable audio alerts</div>
   </div>
 
+  <!-- Postcode-entry overlay: shown on a genuine first visit (no saved cookie, no URL postcode -
+       see resolveStationCoords()/startFeed() in app.js), and again any time via the corner
+       "change location" button below. Hidden by default; app.js removes the "hidden" class. -->
+  <div id="postcode-overlay" class="hidden">
+    <div class="start-title"><span class="pulse-dot"></span>&nbsp; Set Your Location</div>
+    <div class="start-sub">Enter a UK postcode to centre the radar on your area</div>
+    <form id="postcode-form" autocomplete="off">
+      <input type="text" id="postcode-input" placeholder="e.g. NG1 1AA" autocomplete="postal-code" autocapitalize="characters" />
+      <button type="submit">Set location</button>
+    </form>
+    <div id="postcode-error" class="postcode-error"></div>
+  </div>
+
+  <!-- Always-available corner button to change the saved postcode -->
+  <button id="postcode-change-btn" type="button" title="Change your location">📍</button>
+
   <div id="burn-in-shield">
   <main>
     <div class="radar-wrapper" id="radarContainer">

@@ -14,7 +14,10 @@
  *                                                          a second Hue-API bridge (e.g. a diyHue instance)
  *                                                          under its own name, e.g. "pair 192.168.1.55 diyhue"
  *   node lights/hue-bridge.js profiles            list the bridges you've paired
+ *   node lights/hue-bridge.js unpair [profile]    forget a paired bridge (profile defaults to "default")
  *   node lights/hue-bridge.js list                show your lights and which of them would flash
+ *   node lights/hue-bridge.js ips                 list each light's IP address (diyHue only - genuine
+ *                                                  Hue Zigbee bulbs have no IP, so those show "no IP")
  *   node lights/hue-bridge.js test                flash right now (checks the whole chain, ignores cooldown)
  *   node lights/hue-bridge.js serve               run the local server (default; this is what the service
  *                                                  runs - always uses the "default" profile, regardless of
@@ -357,6 +360,37 @@ async function cmdTest() {
   console.log(n ? `Flashed ${n} light(s).` : 'Nothing flashed - see the message above.');
 }
 
+// Genuine Hue Zigbee bulbs have no IP at all - they're not WiFi devices, so this is really only
+// useful for diyHue's IP-based emulated lights (WLED, Tasmota, ESP8266, etc). IPs also aren't
+// part of the v2 CLIP API this script otherwise uses (real Hue has nowhere to put one, and
+// diyHue only exposes it on its older v1-style API), so this hits /api/<key>/lights directly
+// instead of fetchLights(). The exact field name isn't consistent across diyHue light types
+// (protocol_cfg.ip, internalipaddress, etc.), so this searches each light's object for any
+// key that looks like an IP field rather than hardcoding one.
+function findIpField(obj, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 3) return null;
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string' && /ip$/i.test(k) && /^\d{1,3}(\.\d{1,3}){3}$/.test(v)) return v;
+    if (typeof v === 'object') {
+      const found = findIpField(v, (depth || 0) + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+async function cmdIps() {
+  const cfg = getConfig();
+  const v1 = await hueRequest(cfg.bridge, cfg.key, 'GET', `/api/${cfg.key}/lights`);
+  const entries = Object.entries(v1 || {}).filter(([, l]) => l && typeof l === 'object' && l.name);
+  if (!entries.length) { console.log('No lights returned by the bridge.'); return; }
+  const width = Math.max(...entries.map(([, l]) => l.name.length));
+  for (const [, l] of entries) {
+    const ip = findIpField(l, 0);
+    console.log(`  ${l.name.padEnd(width)}  ${ip || '(no IP - not an IP-based light)'}`);
+  }
+}
+
 // --- manual control ----------------------------------------------------------------------------
 const COLOURS = {
   red: '#ff0000', orange: '#ff7a00', yellow: '#ffe000', green: '#00ff00', cyan: '#00ffff',
@@ -606,7 +640,18 @@ function cmdServe() {
       if (!names.length) console.log('No bridges paired yet. Run: pair <bridge-ip> [profile-name]');
       else names.forEach((n) => console.log(`  ${n}${n === 'default' ? ' (default)' : ''} - ${profiles[n].bridge}`));
     }
+    else if (cmd === 'unpair') {
+      const name = args[0] || 'default';
+      const file = readConfigFile();
+      const profiles = getProfiles(file);
+      if (!profiles[name]) throw new Error(`No such profile '${name}'. Run 'profiles' to see what's paired.`);
+      delete profiles[name];
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify({ bridges: profiles }, null, 2), { mode: 0o600 });
+      fs.chmodSync(CONFIG_FILE, 0o600);
+      console.log(`Removed profile '${name}'.${name === 'default' ? ' serve/test will refuse to run until you pair a new "default".' : ''}`);
+    }
     else if (cmd === 'list') await cmdList();
+    else if (cmd === 'ips') await cmdIps();
     else if (cmd === 'test') await cmdTest();
     else if (cmd === 'serve') cmdServe();
     else if (cmd === 'on') await cmdSwitch(args[0], true);

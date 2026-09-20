@@ -94,6 +94,97 @@
       width: 10px; height: 10px;
     }
 
+    /* Postcode-entry overlay: same look as #start-overlay (see above), plus a form */
+    #postcode-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh; height: 100dvh;
+      background: rgba(1, 5, 2, 0.97);
+      z-index: 10001; /* above #start-overlay (10000) so it can be shown over/instead of it */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      user-select: none;
+    }
+    #postcode-overlay.hidden { display: none; }
+    #postcode-overlay .start-title {
+      font-size: 1.1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent-green);
+      text-shadow: 0 0 10px rgba(0,255,102,0.5);
+    }
+    #postcode-overlay .start-sub {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+    #postcode-form {
+      display: flex;
+      gap: 0.6rem;
+      align-items: center;
+    }
+    #postcode-input {
+      background: #061a0d;
+      border: 1px solid var(--accent-green);
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 0.95rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 0.5rem 0.75rem;
+      border-radius: 4px;
+      width: 9rem;
+      text-align: center;
+    }
+    #postcode-input:focus {
+      outline: none;
+      box-shadow: 0 0 8px rgba(0,255,102,0.4);
+    }
+    #postcode-form button[type="submit"] {
+      background: var(--accent-green);
+      color: #030704;
+      border: none;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 0.55rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #postcode-form button[type="submit"]:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    #postcode-error {
+      display: none;
+      color: var(--accent-red);
+      font-size: 0.75rem;
+      max-width: 20rem;
+      text-align: center;
+    }
+
+    #postcode-change-btn {
+      position: fixed;
+      top: 0.6rem;
+      right: 0.6rem;
+      z-index: 10002; /* above the postcode overlay itself, so it's always reachable */
+      background: rgba(3, 7, 4, 0.75);
+      border: 1px solid var(--accent-amber-dim);
+      color: var(--accent-military);
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0.4rem 0.5rem;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    #postcode-change-btn:hover {
+      border-color: var(--accent-military);
+    }
+
     .pulse-dot {
       width: 8px;
       height: 8px;
