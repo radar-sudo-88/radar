@@ -248,6 +248,12 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     let ctx = null;
     let liveAircraft = [];
     let lockedAircraft = null;
+    // Aircraft the user tapped on the scope (see "Aircraft detail panel" below). Tracked by hex, not by
+    // object: liveAircraft is rebuilt from fresh JSON on every poll. selectedSnapshot is the last
+    // record seen, so the panel survives the aircraft briefly (or permanently) leaving the feed.
+    let selectedHex = null;
+    let selectedSnapshot = null;
+    let selectedLostSince = 0;
     let isFetching = false;
     let radarCircle = null;
     let pollBackoffUntil = 0;
@@ -2035,6 +2041,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (isConnected) {
         renderFlightBoard(liveAircraft);
         updateNearestScrollboard(liveAircraft);
+        refreshAircraftDetail();
       }
     }
 
@@ -2529,6 +2536,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           const isEmg = ac.squawk === '7500' || ac.squawk === '7600' || ac.squawk === '7700';
           const isQra = ac.squawk === QRA_SQUAWK;
           const isLocked = lockedAircraft && lockedAircraft.hex === ac.hex;
+          const isSelected = !!selectedHex && ac.hex === selectedHex;
 
           // CRT-style sweep fade: everything except the locked aircraft brightens when the
           // sweep beam passes its bearing, then dims until the next pass comes back around
@@ -2537,7 +2545,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           const angDiff = Math.abs(((sweepAngle - blipAngle + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI);
           if (ac.hex && angDiff < 0.02) aircraftLastSweepHit[ac.hex] = Date.now();
           let fadeAlpha = 1;
-          if (!isLocked && ac.hex) {
+          if (!isLocked && !isSelected && ac.hex) {
             if (aircraftLastSweepHit[ac.hex] === undefined) aircraftLastSweepHit[ac.hex] = Date.now();
             const elapsed = Date.now() - aircraftLastSweepHit[ac.hex];
             const t = Math.min(1, elapsed / SWEEP_FADE_MS);
@@ -2557,6 +2565,19 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
             ctx.shadowBlur = 10 * canvasDpr;
             ctx.stroke();
             ctx.shadowBlur = 0;
+          }
+
+          if (isSelected) {
+            // Dashed white reticle marking the aircraft whose details are open; distinct from the
+            // solid red pulse ring used for the scrollboard lock.
+            ctx.save();
+            ctx.setLineDash([4 * uiScale, 3 * uiScale]);
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 17 * uiScale, 0, 2 * Math.PI);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.restore();
           }
 
           if (ac.track !== undefined) {
@@ -2623,6 +2644,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
             labelBoxY = collidesWith.y + collidesWith.h + labelBoxGap;
           }
           placedLabelBoxes.push({ x: labelBoxX, y: labelBoxY, w: labelBoxW, h: labelBoxH });
+          ac.__labelBox = { x: labelBoxX, y: labelBoxY, w: labelBoxW, h: labelBoxH }; // for tap hit-testing, see findAircraftAtPoint()
 
           // Faded white backing box behind the callsign/altitude label so it stays readable
           // against the scope regardless of what colour/brightness is under it (trails, sweep
@@ -2637,6 +2659,454 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         });
       }
     }
+
+    // ---------------------------------------------------------------------
+    // Aircraft detail panel: tap/click an aircraft (or its callsign label) on the scope.
+    // ---------------------------------------------------------------------
+    // Live numbers (distance, altitude, speed, heading, vertical rate, squawk) come straight from
+    // the ADS-B record and refresh every poll. The route reuses the same verified route lookups
+    // as the scrollboard. The "aircraft profile" block (type, operator, specs, summary) is
+    // fetched once per aircraft from our own backend - POST /api/aircraft-info, which asks Gemini
+    // for a JSON profile (see cors-proxy/server.js) - and is cached for the page's lifetime. The
+    // Gemini API key never reaches the browser.
+    //
+    // Everything shown in the panel is written with textContent, never innerHTML: callsigns are
+    // broadcast over radio and the profile is model output, so neither is trusted as markup.
+    const AIRCRAFT_INFO_PATH_CLIENT = '/api/aircraft-info';
+    const AIRCRAFT_INFO_TIMEOUT_MS = 25000;
+    // A wall board shouldn't be left with a panel covering the scope, so it closes itself after
+    // a couple of minutes without interaction, or once the aircraft has been gone a minute.
+    const AIRCRAFT_DETAIL_IDLE_MS = 120000;
+    const AIRCRAFT_DETAIL_LOST_MS = 60000;
+    const SQUAWK_SHORT_LABELS = { '7500': 'HIJACK', '7600': 'RADIO FAILURE', '7700': 'EMERGENCY', '7777': 'QRA / INTERCEPT' };
+    const AIRCRAFT_CATEGORY_LABELS = {
+      airliner: 'Airliner', regional_airliner: 'Regional airliner', cargo: 'Cargo', business_jet: 'Business jet',
+      general_aviation: 'General aviation', helicopter: 'Helicopter', military_fighter: 'Military fighter',
+      military_transport: 'Military transport', military_tanker: 'Military tanker',
+      military_surveillance: 'Military surveillance', military_trainer: 'Military trainer',
+      military_helicopter: 'Military helicopter', military_other: 'Military', glider_or_balloon: 'Glider / balloon',
+      unmanned: 'Unmanned', other: 'Other'
+    };
+    let aircraftDetailIdleTimer = null;
+    // hex -> { status: 'loading' | 'ok' | 'error' | 'unavailable', info, message, retryable, model }
+    const aircraftProfileState = {};
+
+    function adEl(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined && text !== null) node.textContent = text;
+      return node;
+    }
+
+    function adSetText(id, text) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = text;
+    }
+
+    function adStat(label, valueText, valueClass) {
+      const cell = adEl('div', 'ad-stat');
+      cell.appendChild(adEl('div', 'ad-stat-label', label));
+      cell.appendChild(adEl('div', valueClass ? `ad-stat-value ${valueClass}` : 'ad-stat-value', valueText));
+      return cell;
+    }
+
+    // Nearest aircraft to a point in scope pixels, within tolPx. The callsign label is a much
+    // easier target than the blip itself (especially on a phone), so a tap inside it counts too -
+    // ranked just behind a tap landing directly on a blip.
+    function findAircraftAtPoint(x, y, tolPx) {
+      let best = null;
+      let bestDist = Infinity;
+      for (const ac of liveAircraft) {
+        if (!ac.hex || !ac.__pt) continue;
+        let d = Math.hypot(ac.__pt.x - x, ac.__pt.y - y);
+        const box = ac.__labelBox;
+        if (box && x >= box.x - 3 && x <= box.x + box.w + 3 && y >= box.y - 3 && y <= box.y + box.h + 3) {
+          d = Math.min(d, tolPx * 0.75);
+        }
+        if (d <= tolPx && d < bestDist) { best = ac; bestDist = d; }
+      }
+      return best;
+    }
+
+    function handleScopeClick(e) {
+      // Clicks inside the panel itself bubble up to the scope - they're not scope taps. Use the
+      // event's path (fixed when the click was dispatched) rather than e.target.closest(): a
+      // button like "Try again" re-renders the panel from its own click handler, which detaches
+      // it from the DOM before the event gets here, and closest() would then find nothing.
+      const panelEl = document.getElementById('aircraft-detail');
+      const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+      if (panelEl && (path.includes(panelEl) || (e.target && e.target.closest && e.target.closest('#aircraft-detail')))) return;
+      const container = document.getElementById('radarContainer');
+      if (!container) return;
+      // getBoundingClientRect() already includes the burn-in shield's pixel shift (a translate).
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+      const tol = Math.max(coarse ? 28 : 16, (coarse ? 22 : 12) * uiScale);
+      const hit = findAircraftAtPoint(x, y, tol);
+      if (!hit) { deselectAircraft(); return; }
+      if (hit.hex === selectedHex) { resetAircraftDetailIdleTimer(); return; }
+      selectAircraft(hit);
+    }
+
+    function resetAircraftDetailIdleTimer() {
+      clearTimeout(aircraftDetailIdleTimer);
+      aircraftDetailIdleTimer = setTimeout(deselectAircraft, AIRCRAFT_DETAIL_IDLE_MS);
+    }
+
+    function selectAircraft(ac) {
+      selectedHex = ac.hex;
+      selectedSnapshot = ac;
+      selectedLostSince = 0;
+      buildAircraftDetailPanel(ac);
+      renderAircraftDetailLive();
+      resetAircraftDetailIdleTimer();
+
+      // The route APIs are normally only queried for the scrollboard's target aircraft; look this
+      // one up too. Cached, and a no-op for aircraft without a usable callsign.
+      fetchRoutesForAircraft([ac])
+        .then(() => { if (selectedHex === ac.hex) renderAircraftDetailLive(); })
+        .catch((err) => console.warn('[DETAIL] route lookup failed:', err));
+      resolveAircraftPhoto(ac)
+        .then((url) => { if (selectedHex === ac.hex) setAircraftDetailPhoto(url); })
+        .catch(() => {});
+
+      loadAircraftProfile(ac, false);
+      renderAircraftDetailProfile();
+    }
+
+    function deselectAircraft() {
+      if (!selectedHex) return;
+      selectedHex = null;
+      selectedSnapshot = null;
+      selectedLostSince = 0;
+      clearTimeout(aircraftDetailIdleTimer);
+      const panel = document.getElementById('aircraft-detail');
+      if (panel) { panel.classList.add('hidden'); panel.textContent = ''; }
+    }
+
+    // Called after every successful poll (see updateUIState).
+    function refreshAircraftDetail() {
+      if (!selectedHex) return;
+      const live = liveAircraft.find((a) => a.hex === selectedHex);
+      if (live) {
+        selectedSnapshot = live;
+        selectedLostSince = 0;
+      } else {
+        if (!selectedLostSince) selectedLostSince = Date.now();
+        if (Date.now() - selectedLostSince > AIRCRAFT_DETAIL_LOST_MS) { deselectAircraft(); return; }
+      }
+      renderAircraftDetailLive();
+    }
+
+    function buildAircraftDetailPanel(ac) {
+      const panel = document.getElementById('aircraft-detail');
+      if (!panel) return;
+      panel.textContent = '';
+
+      // Put the panel on the side of the scope away from the aircraft, so it doesn't cover
+      // what was just tapped. Decided once per selection so it doesn't jump around as the
+      // aircraft moves.
+      const portrait = !!(window.matchMedia && window.matchMedia('(max-width: 1100px) and (orientation: portrait)').matches);
+      const pt = ac.__pt;
+      if (portrait) panel.dataset.side = pt && pt.y > viewH / 2 ? 'top' : 'bottom';
+      else panel.dataset.side = pt && pt.x > viewW / 2 ? 'left' : 'right';
+
+      const head = adEl('div', 'ad-head');
+      const titles = adEl('div', 'ad-titles');
+      const callsign = adEl('div', 'ad-callsign');
+      callsign.id = 'ad-callsign';
+      const sub = adEl('div', 'ad-sub');
+      sub.id = 'ad-sub';
+      titles.appendChild(callsign);
+      titles.appendChild(sub);
+      const close = adEl('button', 'ad-close', '✕');
+      close.type = 'button';
+      close.setAttribute('aria-label', 'Close aircraft details');
+      close.addEventListener('click', deselectAircraft);
+      head.appendChild(titles);
+      head.appendChild(close);
+      panel.appendChild(head);
+
+      const photo = adEl('div', 'ad-photo');
+      photo.id = 'ad-photo';
+      photo.hidden = true;
+      panel.appendChild(photo);
+
+      const lost = adEl('div', 'ad-lost');
+      lost.id = 'ad-lost';
+      lost.hidden = true;
+      panel.appendChild(lost);
+
+      const live = adEl('div', 'ad-live');
+      live.id = 'ad-live';
+      panel.appendChild(live);
+
+      const route = adEl('div', 'ad-section ad-route');
+      route.id = 'ad-route';
+      panel.appendChild(route);
+
+      const profile = adEl('div', 'ad-section ad-profile');
+      profile.id = 'ad-profile';
+      panel.appendChild(profile);
+
+      panel.classList.remove('hidden');
+    }
+
+    function setAircraftDetailPhoto(url) {
+      const box = document.getElementById('ad-photo');
+      if (!box) return;
+      box.textContent = '';
+      if (url && /^https:\/\//i.test(url)) {
+        const img = document.createElement('img');
+        img.alt = 'Aircraft photo';
+        img.referrerPolicy = 'no-referrer';
+        img.src = url;
+        box.appendChild(img);
+        box.hidden = false;
+      } else {
+        box.hidden = true;
+      }
+    }
+
+    function renderAircraftDetailLive() {
+      const ac = selectedSnapshot;
+      const panel = document.getElementById('aircraft-detail');
+      if (!ac || !panel || panel.classList.contains('hidden')) return;
+
+      const callsign = (ac.flight || '').trim();
+      const reg = (ac.r || '').trim();
+      const type = (ac.t || '').trim();
+      const isAlert = isAlertSquawk(ac);
+      const title = document.getElementById('ad-callsign');
+      if (title) {
+        title.textContent = callsign || String(ac.hex).toUpperCase();
+        title.classList.toggle('alert', isAlert);
+      }
+      adSetText('ad-sub', [reg, type, `ICAO ${String(ac.hex).toUpperCase()}`].filter(Boolean).join(' · '));
+
+      const lostEl = document.getElementById('ad-lost');
+      if (lostEl) {
+        lostEl.hidden = !selectedLostSince;
+        if (selectedLostSince) lostEl.textContent = `Signal lost ${Math.round((Date.now() - selectedLostSince) / 1000)}s ago - showing last known data`;
+      }
+
+      const live = document.getElementById('ad-live');
+      if (live) {
+        live.textContent = '';
+        const hasPos = Number.isFinite(ac.lat) && Number.isFinite(ac.lon);
+        if (hasPos) {
+          const dist = calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
+          const brg = calcBearing(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
+          live.appendChild(adStat('Distance', `${dist.toFixed(1)} NM`, null));
+          live.appendChild(adStat('Bearing', `${brg}° ${getCardinalFromDeg(brg)}`, null));
+        }
+        const alt = ac.alt_baro;
+        live.appendChild(adStat('Altitude', typeof alt === 'number' ? `${Math.round(alt).toLocaleString('en-GB')} ft` : (alt === 'ground' ? 'On ground' : '--'), null));
+        live.appendChild(adStat('Speed', Number.isFinite(ac.gs) ? `${Math.round(ac.gs)} kts · ${Math.round(ac.gs * 1.15078)} mph` : '--', null));
+        live.appendChild(adStat('Heading', Number.isFinite(ac.track) ? `${Math.round(ac.track)}° ${getCardinalFromDeg(ac.track)}` : '--', null));
+        const vs = ac.baro_rate;
+        if (Number.isFinite(vs) && vs > 30) live.appendChild(adStat('Vertical', `▲ +${Math.round(vs)} ft/min`, 'up'));
+        else if (Number.isFinite(vs) && vs < -30) live.appendChild(adStat('Vertical', `▼ ${Math.round(vs)} ft/min`, 'down'));
+        else live.appendChild(adStat('Vertical', Number.isFinite(vs) ? 'Level' : '--', null));
+        const squawk = ac.squawk ? String(ac.squawk) : '';
+        live.appendChild(adStat('Squawk', squawk ? (SQUAWK_SHORT_LABELS[squawk] ? `${squawk} · ${SQUAWK_SHORT_LABELS[squawk]}` : squawk) : '--', isAlert ? 'alert' : null));
+      }
+
+      renderAircraftDetailRoute(ac, callsign);
+    }
+
+    function renderAircraftDetailRoute(ac, callsign) {
+      const box = document.getElementById('ad-route');
+      if (!box) return;
+      box.textContent = '';
+      box.appendChild(adEl('div', 'ad-section-title', 'Route'));
+
+      const addRow = (label, text) => {
+        const row = adEl('div', 'ad-route-row');
+        row.appendChild(adEl('span', 'ad-route-label', label));
+        row.appendChild(adEl('span', 'ad-route-value', text));
+        box.appendChild(row);
+      };
+
+      const override = REGISTRATION_OVERRIDES[(ac.r || '').trim().toUpperCase()];
+      if (override && override.route) {
+        addRow('From', override.route.from);
+        addRow('To', override.route.to);
+        return;
+      }
+
+      const route = resolveFlightRoute(callsign || `ICAO: ${ac.hex}`, ac);
+      if (route) {
+        addRow('From', `${route.fromCode} - ${route.fromName || airportName(route.fromCode) || 'Aerodrome'}`);
+        addRow('To', `${route.toCode} - ${route.toName || airportName(route.toCode) || 'Aerodrome'}`);
+        const tag = route.source === 'opensky' ? 'Track-derived estimate, not a verified schedule'
+          : `Verified route data (${route.source === 'hexdb' ? 'hexdb' : route.source})`;
+        box.appendChild(adEl('div', 'ad-fine', tag));
+        return;
+      }
+
+      const looking = /^[A-Z0-9]{3,8}$/.test(callsign.toUpperCase()) && routeCache[routeCacheKey(ac)] === undefined;
+      box.appendChild(adEl('div', 'ad-dim', looking ? 'Looking up route…' : 'No verified route available'));
+    }
+
+    // Only the fields the backend whitelists. The backend builds the actual prompt itself.
+    function buildAircraftInfoPayload(ac) {
+      const str = (v) => (typeof v === 'string' ? v.trim() : '');
+      const payload = { hex: str(ac.hex) };
+      ['flight', 'r', 't', 'desc', 'ownOp', 'category'].forEach((k) => { const v = str(ac[k]); if (v) payload[k] = v; });
+      if (ac.year !== undefined && ac.year !== null && ac.year !== '') payload.year = ac.year;
+      return payload;
+    }
+
+    function aircraftProfileErrorState(status, code) {
+      switch (code) {
+        case 'not_configured': return { message: "Aircraft profiles aren't set up on this server yet.", retryable: false };
+        case 'daily_limit': return { message: 'The daily limit for AI lookups has been reached. Try again tomorrow.', retryable: false };
+        case 'rate_limited': return { message: 'Too many lookups just now - wait a minute and try again.', retryable: true };
+        case 'ai_busy': return { message: 'Gemini is busy right now. Try again shortly.', retryable: true };
+        case 'ai_timeout': return { message: 'Gemini took too long to answer.', retryable: true };
+        case 'insufficient_data': return { message: "This aircraft isn't broadcasting enough (no type, registration or callsign) to look up.", retryable: false };
+        default: return { message: "Couldn't get an aircraft profile right now.", retryable: true };
+      }
+    }
+
+    async function loadAircraftProfile(ac, force) {
+      const hex = ac.hex;
+      const existing = aircraftProfileState[hex];
+      if (!force && existing && existing.status !== 'error') return;
+
+      // Simulated / injected contacts (TEST..., UFO..., SIM...) and TIS-B targets ("~...") have no
+      // real ICAO address; there's nothing true to say about them.
+      if (!/^[0-9A-Fa-f]{6}$/.test(hex || '')) {
+        aircraftProfileState[hex] = { status: 'unavailable', message: 'No profile for simulated or non-ICAO contacts.' };
+        return;
+      }
+      const payload = buildAircraftInfoPayload(ac);
+      if (!payload.flight && !payload.r && !payload.t && !payload.desc) {
+        aircraftProfileState[hex] = { status: 'unavailable', message: "This aircraft isn't broadcasting a type, registration or callsign, so there's nothing to look up." };
+        return;
+      }
+
+      aircraftProfileState[hex] = { status: 'loading' };
+      if (selectedHex === hex) renderAircraftDetailProfile();
+      try {
+        const res = await fetchWithTimeout(`${WORKER_URL}${AIRCRAFT_INFO_PATH_CLIENT}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(payload)
+        }, AIRCRAFT_INFO_TIMEOUT_MS);
+        let data = null;
+        try { data = await res.json(); } catch (parseErr) { /* non-JSON error page etc. */ }
+        if (res.ok && data && data.ok === true) {
+          aircraftProfileState[hex] = { status: 'ok', info: data.info || null, model: data.model || '' };
+        } else {
+          const code = data && data.error;
+          const mapped = aircraftProfileErrorState(res.status, code);
+          aircraftProfileState[hex] = { status: code === 'insufficient_data' ? 'unavailable' : 'error', message: mapped.message, retryable: mapped.retryable };
+        }
+      } catch (err) {
+        const timedOut = err && err.name === 'AbortError';
+        aircraftProfileState[hex] = { status: 'error', message: timedOut ? 'Gemini took too long to answer.' : "Couldn't reach the radar server.", retryable: true };
+      }
+      if (selectedHex === hex) renderAircraftDetailProfile();
+    }
+
+    function renderAircraftDetailProfile() {
+      const box = document.getElementById('ad-profile');
+      if (!box || !selectedHex) return;
+      box.textContent = '';
+
+      const title = adEl('div', 'ad-section-title');
+      title.appendChild(adEl('span', null, 'Aircraft profile'));
+      title.appendChild(adEl('span', 'ad-ai-badge', 'AI'));
+      box.appendChild(title);
+
+      const st = aircraftProfileState[selectedHex];
+      if (!st || st.status === 'loading') {
+        const skel = adEl('div', 'ad-skeleton');
+        skel.appendChild(adEl('div', 'ad-skel-line w60'));
+        skel.appendChild(adEl('div', 'ad-skel-line w90'));
+        skel.appendChild(adEl('div', 'ad-skel-line w75'));
+        box.appendChild(skel);
+        box.appendChild(adEl('div', 'ad-dim', 'Asking Gemini…'));
+        return;
+      }
+      if (st.status === 'unavailable' || st.status === 'error') {
+        box.appendChild(adEl('div', 'ad-dim', st.message));
+        if (st.status === 'error' && st.retryable) {
+          const retry = adEl('button', 'ad-retry', 'Try again');
+          retry.type = 'button';
+          retry.addEventListener('click', () => { if (selectedSnapshot) loadAircraftProfile(selectedSnapshot, true); });
+          box.appendChild(retry);
+        }
+        return;
+      }
+
+      const info = st.info;
+      if (!info || typeof info !== 'object') {
+        box.appendChild(adEl('div', 'ad-dim', 'No reliable details found for this aircraft.'));
+        return;
+      }
+
+      // Defensive even though the server validates: only ever render strings/finite numbers.
+      const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+      const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+      const name = str(info.aircraft_name);
+      const maker = str(info.manufacturer);
+      if (name) box.appendChild(adEl('div', 'ad-type-name', name));
+      const chips = adEl('div', 'ad-chips');
+      const catLabel = AIRCRAFT_CATEGORY_LABELS[info.category];
+      if (catLabel) chips.appendChild(adEl('span', 'ad-chip', catLabel));
+      if (maker && (!name || !name.toLowerCase().includes(maker.toLowerCase()))) chips.appendChild(adEl('span', 'ad-chip', maker));
+      if (chips.childNodes.length) box.appendChild(chips);
+
+      const operator = str(info.operator);
+      if (operator) {
+        const row = adEl('div', 'ad-route-row');
+        row.appendChild(adEl('span', 'ad-route-label', 'Operator'));
+        row.appendChild(adEl('span', 'ad-route-value', operator));
+        box.appendChild(row);
+      }
+
+      const summary = str(info.summary);
+      if (summary) box.appendChild(adEl('p', 'ad-summary', summary));
+
+      const specs = [];
+      if (str(info.engines)) specs.push(['Engines', str(info.engines)]);
+      if (str(info.typical_capacity)) specs.push(['Capacity', str(info.typical_capacity)]);
+      if (num(info.cruise_speed_kts) !== null) specs.push(['Cruise', `${num(info.cruise_speed_kts).toLocaleString('en-GB')} kts`]);
+      if (num(info.range_nm) !== null) specs.push(['Range', `${num(info.range_nm).toLocaleString('en-GB')} NM`]);
+      if (num(info.service_ceiling_ft) !== null) specs.push(['Ceiling', `${num(info.service_ceiling_ft).toLocaleString('en-GB')} ft`]);
+      if (num(info.introduced_year) !== null) specs.push(['Introduced', String(num(info.introduced_year))]);
+      if (specs.length) {
+        const grid = adEl('div', 'ad-specs');
+        specs.forEach(([label, value]) => grid.appendChild(adStat(label, value, null)));
+        box.appendChild(grid);
+      }
+
+      const facts = Array.isArray(info.notable_facts) ? info.notable_facts.map(str).filter(Boolean).slice(0, 3) : [];
+      if (facts.length) {
+        const list = adEl('ul', 'ad-facts');
+        facts.forEach((f) => list.appendChild(adEl('li', null, f)));
+        box.appendChild(list);
+      }
+
+      const conf = ['high', 'medium', 'low'].includes(info.confidence) ? info.confidence : 'low';
+      const foot = adEl('div', 'ad-fine');
+      const confBadge = adEl('span', `ad-conf ${conf}`, `${conf} confidence`);
+      foot.appendChild(confBadge);
+      foot.appendChild(document.createTextNode(' · AI-generated by Gemini, so double-check anything important.'));
+      box.appendChild(foot);
+    }
+
+    const radarContainerEl = document.getElementById('radarContainer');
+    if (radarContainerEl) radarContainerEl.addEventListener('click', handleScopeClick);
+    const aircraftDetailEl = document.getElementById('aircraft-detail');
+    if (aircraftDetailEl) aircraftDetailEl.addEventListener('pointerdown', resetAircraftDetailIdleTimer);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && selectedHex) deselectAircraft(); });
 
     document.getElementById('start-overlay').addEventListener('click', startFeed);
     document.getElementById('start-overlay').addEventListener('touchstart', startFeed);
