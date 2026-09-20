@@ -40,12 +40,46 @@
  *                                            touch HUE_LIGHTS/HUE_INCLUDE_OFF/HUE_MAX_NM filtering,
  *                                            so it works even on lights the military alert skips.
  *                                            Restores the light's prior state afterwards.
+ *   pattern <lights> <colors> [order] [times]   all matched lights change together, step by step,
+ *                                            through a colour sequence, e.g.
+ *                                            pattern all red,green,blue
+ *                                            -> every light goes red, then every light goes green,
+ *                                            then every light goes blue. order is 1-based indices
+ *                                            into <colors> letting you reorder or repeat colours
+ *                                            without retyping them, e.g. order "3,1,2,1" (default:
+ *                                            listed order, once each). times repeats the whole
+ *                                            order that many times in a row (default 1) - see
+ *                                            below for what "more than once" means for each
+ *                                            command. Each colour accepts the same syntax as
+ *                                            HUE_RESTORE (name, hex, or white tone, @brightness),
+ *                                            e.g. pattern all "red@100,warm@40,blue@70"
+ *   chase <lights> <colors> [order] [times] [reverse]   colours travel down the light list over
+ *                                            time instead of all lights changing together, e.g.
+ *                                            chase "a,b,c" red,green,blue
+ *                                            -> a starts red, b green, c blue; next beat a becomes
+ *                                            blue (what c had), b becomes red, c becomes green,
+ *                                            and so on, wrapping around. order reorders/repeats
+ *                                            the starting colours the same way as pattern's order.
+ *                                            times = how many full laps before it stops and
+ *                                            restores (default 1 - see below to run it more than
+ *                                            once). reverse flips the direction of travel.
  *   state <light>                            everything the bridge reports for that light
  *   save [snapshot]  |  restore [snapshot] [light]   snapshot/put back all lights (name defaults to
  *                                            "default" - unrelated to the bridge profile name above).
  *                                            Every flash first saves the lights as "preflash", so a
  *                                            flash that goes wrong can be undone: restore preflash
  *   help                                     this list
+ *
+ * Running something more than once:
+ *   - pattern/chase's own [times] argument repeats the whole sequence/lap that many times back
+ *     to back in ONE call, restoring only at the very end, e.g.
+ *       node lights/hue-bridge.js pattern all red,green,blue 1,2,3 4
+ *     runs the red/green/blue cycle 4 times through before putting the lights back.
+ *   - To repeat a command as entirely separate runs instead (each one saving/restoring on its
+ *     own), just call it again - in a shell loop if you want several back to back, e.g.
+ *       for i in 1 2 3; do node lights/hue-bridge.js chase "shelf,lamp,strip" red,green,blue; done
+ *   - blink's own [times] argument (see above) works the same way as pattern/chase's - it's a
+ *     count of on/off flashes within one call.
  *
  * Each paired bridge's address and app key are stored in ~/.radar-hue.json (mode 600, outside the repo
  * so it can never be committed), keyed by profile name. HUE_BRIDGE_IP / HUE_APP_KEY together override
@@ -258,7 +292,7 @@ function parseLook(value) {
   else if (/^\d{4,5}k$/.test(w)) look.mirek = Math.round(1e6 / parseInt(w, 10));
   else {
     const xy = hexToXy(COLOURS[w] || w);
-    if (!xy) throw new Error(`HUE_RESTORE: don't understand '${what}'`);
+    if (!xy) throw new Error(`don't understand colour '${what}'`);
     look.xy = xy;
   }
   return look;
@@ -434,6 +468,28 @@ function parseBrightness(word) {
   return n;
 }
 
+// Parses a 1-based "order" argument (e.g. "3,1,2,1") into an array of indices into a list of
+// length n. Used by both pattern and chase so their [order] argument works the same way.
+// Defaults to 1,2,3,...,n (i.e. the colours as typed, once each) when no order is given.
+function parseOrder(orderWord, n) {
+  if (!orderWord) return Array.from({ length: n }, (_, i) => i + 1);
+  return orderWord.split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
+    const idx = parseInt(s, 10);
+    if (!Number.isFinite(idx) || idx < 1 || idx > n) throw new Error(`order: '${s}' is out of range 1-${n}`);
+    return idx;
+  });
+}
+
+// Builds a PUT body for a single "look" (as produced by parseLook) on a specific light, falling
+// back to a plain on/off blip if the light can't reproduce that look (e.g. a mirek step sent to
+// a colour-only bulb, or vice versa) - same spirit as cmdBlink's white-only handling.
+function lookBody(l, look) {
+  const bri = look.brightness != null ? look.brightness : 100;
+  if (look.xy && l.color) return { on: { on: true }, dimming: { brightness: bri }, color: { xy: look.xy }, dynamics: { duration: 0 } };
+  if (look.mirek != null && l.color_temperature) return { on: { on: true }, dimming: { brightness: bri }, color_temperature: { mirek: look.mirek }, dynamics: { duration: 0 } };
+  return { on: { on: true }, dynamics: { duration: 0 } };
+}
+
 // makeBody(light) returns a request body, or a string explaining why this light is skipped.
 async function applyToLights(target, makeBody) {
   const cfg = getConfig();
@@ -551,6 +607,87 @@ async function cmdBlink(target, colourWord, timesWord) {
   console.log('done');
 }
 
+// pattern: all matched lights change together, step by step, through a colour sequence.
+// At step T every light shows sequence[T]. `times` repeats the whole sequence back to back
+// within this one call, restoring only once at the very end - see the header for how this
+// differs from just re-running the command.
+async function cmdPattern(target, colorsWord, orderWord, timesWord) {
+  if (!target || !colorsWord) {
+    throw new Error(`Usage: pattern <light> <color1,color2,...> [order] [times]   e.g. pattern all red,green,blue`);
+  }
+  const colourWords = colorsWord.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!colourWords.length) throw new Error('pattern: need at least one colour');
+  const looks = colourWords.map(parseLook);
+  const order = parseOrder(orderWord, looks.length);
+  const times = timesWord != null ? Math.max(1, parseInt(timesWord, 10) || 1) : 1;
+
+  const steps = [];
+  for (let t = 0; t < times; t++) for (const idx of order) steps.push(looks[idx - 1]);
+
+  const cfg = getConfig();
+  const lights = matchLights(await fetchLights(cfg), target);
+  if (!lights.length) throw new Error(`No light matches '${target}'. Run 'list' to see the names.`);
+
+  const snaps = lights.map(snapshot);
+  const phaseMs = Math.max(STEP_MS, snaps.length * 110);
+
+  console.log(`Pattern on ${snaps.length} light(s), ${steps.length} step(s) total: ${order.map((i) => colourWords[i - 1]).join(' -> ')}${times > 1 ? ` x${times}` : ''}`);
+  try {
+    for (let i = 0; i < steps.length; i++) {
+      await Promise.allSettled(lights.map((l) => putLight(cfg, l.id, lookBody(l, steps[i]))));
+      await sleep(phaseMs);
+      if (i < steps.length - 1) {
+        await Promise.allSettled(lights.map((l) => putLight(cfg, l.id, offBody())));
+        await sleep(phaseMs);
+      }
+    }
+  } finally {
+    await restoreLights(cfg, snaps);
+  }
+  console.log('done');
+}
+
+// chase: colours travel down the light list over time instead of every light changing together.
+// At shift 0, light i shows sequence[i] (after order is applied); each later shift, every colour
+// moves one light along (wrapping with modulo), so it visibly slides down the line. `times` is
+// how many full laps to run before stopping and restoring, all within this one call. `reverse`
+// flips the direction of travel.
+async function cmdChase(target, colorsWord, orderWord, timesWord, reverseWord) {
+  if (!target || !colorsWord) {
+    throw new Error(`Usage: chase <light> <color1,color2,...> [order] [times] [reverse]   e.g. chase "a,b,c" red,green,blue`);
+  }
+  const colourWords = colorsWord.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!colourWords.length) throw new Error('chase: need at least one colour');
+  const looks = colourWords.map(parseLook);
+  const order = parseOrder(orderWord, looks.length);
+  const sequence = order.map((idx) => looks[idx - 1]); // starting colour-per-slot, after reorder
+  const times = timesWord != null ? Math.max(1, parseInt(timesWord, 10) || 1) : 1;
+  const dir = (reverseWord || '').toLowerCase() === 'reverse' ? -1 : 1;
+
+  const cfg = getConfig();
+  const lights = matchLights(await fetchLights(cfg), target);
+  if (!lights.length) throw new Error(`No light matches '${target}'. Run 'list' to see the names.`);
+
+  const snaps = lights.map(snapshot);
+  const phaseMs = Math.max(STEP_MS, snaps.length * 110);
+  const N = sequence.length;
+  const shifts = N * times; // one full lap per `times`, so it ends back where it started
+
+  console.log(`Chasing ${sequence.map((_, i) => colourWords[order[i] - 1]).join(' -> ')} across ${lights.length} light(s), ${shifts} shift(s) (${times} lap${times === 1 ? '' : 's'})`);
+  try {
+    for (let s = 0; s < shifts; s++) {
+      await Promise.allSettled(lights.map((l, i) => {
+        const look = sequence[((i - s * dir) % N + N) % N];
+        return putLight(cfg, l.id, lookBody(l, look));
+      }));
+      await sleep(phaseMs);
+    }
+  } finally {
+    await restoreLights(cfg, snaps);
+  }
+  console.log('done');
+}
+
 async function cmdState(target) {
   if (!target) throw new Error('Usage: state <light>   (part of a name, or "all")');
   const cfg = getConfig();
@@ -625,6 +762,10 @@ function cmdServe() {
   server.listen(LIGHTS_PORT, '127.0.0.1', () => {
     log(`hue bridge listening on 127.0.0.1:${LIGHTS_PORT} (max ${MAX_NM} NM, ${FLASHES} flashes, cooldown ${COOLDOWN_MS / 1000}s)`);
   });
+  server.on('error', (err) => {
+    log(`could not start server: ${err.message}`);
+    process.exit(1);
+  });
 }
 
 // --- main --------------------------------------------------------------------------------------
@@ -663,6 +804,8 @@ function cmdServe() {
     else if (cmd === 'dim') await cmdStep(args[0], args[1], -1);
     else if (cmd === 'bright' || cmd === 'brighten') await cmdStep(args[0], args[1], 1);
     else if (cmd === 'blink' || cmd === 'flash') await cmdBlink(args[0], args[1], args[2]);
+    else if (cmd === 'pattern' || cmd === 'sequence') await cmdPattern(args[0], args[1], args[2], args[3]);
+    else if (cmd === 'chase') await cmdChase(args[0], args[1], args[2], args[3], args[4]);
     else if (cmd === 'state') await cmdState(args[0]);
     else if (cmd === 'save') await cmdSave(args[0]);
     else if (cmd === 'restore') await cmdRestore(args[0], args[1]);
