@@ -165,7 +165,12 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     }
 
     // --- Postcode-entry overlay (first visit, and the corner "change location" button) -------
-    function showPostcodeOverlay(prefill) {
+    // focusInput: pass true ONLY when called synchronously from a tap/click handler (the 📍 button).
+    // iOS Safari opens the keyboard only for a focus() made inside the gesture's own event handler;
+    // the old setTimeout(focus, 50) lost that, leaving the field "focused" but with no keyboard (and
+    // a later tap on it then does nothing). The first-visit path isn't a direct gesture, so it skips
+    // focus and the person just taps the field.
+    function showPostcodeOverlay(prefill, focusInput) {
       const overlay = document.getElementById('postcode-overlay');
       const input = document.getElementById('postcode-input');
       const err = document.getElementById('postcode-error');
@@ -173,7 +178,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (input) input.value = prefill || '';
       if (err) err.style.display = 'none';
       overlay.classList.remove('hidden');
-      if (input) setTimeout(() => input.focus(), 50);
+      if (input && focusInput) input.focus();
     }
     function hidePostcodeOverlay() {
       const overlay = document.getElementById('postcode-overlay');
@@ -188,6 +193,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const raw = input ? input.value.trim() : '';
       if (!raw) return;
 
+      // Unlock audio/speech NOW, synchronously inside the tap. Once we've awaited the postcode
+      // lookup below, iOS no longer counts this as a user gesture and would leave the alerts silent
+      // (only matters on first visit - after that startFeed has already run).
+      if (!feedStarted) unlockAudioFromGesture();
+
       if (submitBtn) submitBtn.disabled = true;
       const result = await geocodePostcode(raw);
       if (submitBtn) submitBtn.disabled = false;
@@ -196,7 +206,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         if (err) {
           err.textContent = result.error === 'not-a-postcode'
             ? "That doesn't look like a UK postcode."
-            : "Couldn't find that postcode - double check it and try again.";
+            : result.error === 'network'
+              ? "Couldn't reach the postcode lookup - check your connection and try again."
+              : "Couldn't find that postcode - double check it and try again.";
           err.style.display = 'block';
         }
         return;
@@ -453,11 +465,24 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     function initKioskAudio() {
       try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // Reuse the context if a gesture handler already made one (see unlockAudioFromGesture).
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') {
           audioCtx.resume();
         }
       } catch (e) {}
+    }
+
+    // Audio + speech unlock, for a tap handler that can't call startFeed() straight away.
+    function unlockAudioFromGesture() {
+      initKioskAudio();
+      if ('speechSynthesis' in window) {
+        try {
+          const warmup = new SpeechSynthesisUtterance('');
+          warmup.volume = 0;
+          window.speechSynthesis.speak(warmup);
+        } catch (e) {}
+      }
     }
 
     // Runs on the first user gesture (tap/click on the start overlay). Browsers require a
@@ -2605,7 +2630,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     if (postcodeForm) postcodeForm.addEventListener('submit', handlePostcodeSubmit);
     const postcodeChangeBtn = document.getElementById('postcode-change-btn');
     if (postcodeChangeBtn) {
-      postcodeChangeBtn.addEventListener('click', () => showPostcodeOverlay(getCookie(POSTCODE_COOKIE) || ''));
+      postcodeChangeBtn.addEventListener('click', () => showPostcodeOverlay(getCookie(POSTCODE_COOKIE) || '', true));
     }
 
     // Unattended kiosk: the Pi's launcher (deploy/kiosk.sh) opens the page with ?autostart=1 so

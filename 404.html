@@ -135,6 +135,17 @@
       transition: transform 8s linear;
     }
 
+    /* Credit line under the scrollboard */
+    .site-credit {
+      flex-shrink: 0;
+      text-align: center;
+      font-size: 0.6rem;
+      line-height: 1;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      padding: 0.15rem 0 0.3rem;
+    }
+
     .radar-wrapper {
       position: relative;
       background: #010502;
@@ -747,6 +758,7 @@
       </div>
     </div>
   </footer>
+  <div class="site-credit">Co-built by father and son.</div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"

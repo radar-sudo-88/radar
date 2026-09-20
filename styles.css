@@ -106,7 +106,8 @@
       align-items: center;
       justify-content: center;
       gap: 1rem;
-      user-select: none;
+      /* No user-select: none here (the start overlay has it): on iOS Safari it can stop the
+         postcode field inside from being typed into. */
     }
     #postcode-overlay.hidden { display: none; }
     #postcode-overlay .start-title {
@@ -130,13 +131,19 @@
       border: 1px solid var(--accent-green);
       color: var(--text-main);
       font-family: inherit;
-      font-size: 0.95rem;
+      /* 16px minimum: anything smaller makes iOS Safari zoom the page in when the field is
+         focused, and with touch-action: none on the body there's no way to zoom back out. */
+      font-size: max(16px, 1rem);
       letter-spacing: 0.05em;
       text-transform: uppercase;
       padding: 0.5rem 0.75rem;
       border-radius: 4px;
       width: 9rem;
       text-align: center;
+      -webkit-appearance: none;
+      appearance: none;
+      -webkit-user-select: text;
+      user-select: text;
     }
     #postcode-input:focus {
       outline: none;
@@ -154,6 +161,9 @@
       padding: 0.55rem 1rem;
       border-radius: 4px;
       cursor: pointer;
+      touch-action: manipulation;
+      -webkit-appearance: none;
+      appearance: none;
     }
     #postcode-form button[type="submit"]:disabled {
       opacity: 0.5;
@@ -380,6 +390,17 @@
       align-items: center;
       z-index: 1000;
       flex-shrink: 0;
+    }
+
+    /* Credit line under the scrollboard */
+    .site-credit {
+      flex-shrink: 0;
+      text-align: center;
+      font-size: 0.6rem;
+      line-height: 1;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      padding: 0.15rem 0 0.3rem;
     }
 
     .scrollboard {

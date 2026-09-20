@@ -33,7 +33,7 @@
     <div class="start-title"><span class="pulse-dot"></span>&nbsp; Set Your Location</div>
     <div class="start-sub">Enter a UK postcode to centre the radar on your area</div>
     <form id="postcode-form" autocomplete="off">
-      <input type="text" id="postcode-input" placeholder="e.g. NG1 1AA" autocomplete="postal-code" autocapitalize="characters" />
+      <input type="text" id="postcode-input" placeholder="e.g. NG1 1AA" autocomplete="postal-code" autocapitalize="characters" autocorrect="off" spellcheck="false" enterkeyhint="go" />
       <button type="submit">Set location</button>
     </form>
     <div id="postcode-error" class="postcode-error"></div>
@@ -117,6 +117,7 @@
       </div>
     </div>
   </footer>
+  <div class="site-credit">Co-built by father and son.</div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
