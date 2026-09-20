@@ -16,6 +16,11 @@
 #                                             needs no sudo and no token
 #   ./deploy/install-services.sh uninstall    remove the services and the kiosk entry
 #
+# Aircraft-details panel (tap an aircraft -> Gemini profile): put the key in /etc/radar.env, which the
+# server unit reads if it exists (nothing here creates or touches it):
+#   GEMINI_API_KEY=...                (required for the panel's AI profile; get one at aistudio.google.com/apikey)
+#   GEMINI_MODEL=gemini-3.1-flash-lite   GEMINI_DAILY_LIMIT=500     (both optional)
+#
 # Optional env vars:
 #   PORT (default 10004)          TUNNEL_NAME (default radar)
 #   KIOSK=0                       skip the kiosk entry during a full install
@@ -66,6 +71,9 @@ User=$RUN_USER
 WorkingDirectory=$REPO_DIR/cors-proxy
 ExecStart=$NODE_BIN server.js
 Environment=PORT=$PORT
+# Optional secrets/settings file (e.g. GEMINI_API_KEY for the aircraft-details panel). The leading
+# "-" means a missing file is fine. Create it with: sudo install -m 600 /dev/null /etc/radar.env
+EnvironmentFile=-/etc/radar.env
 Restart=always
 RestartSec=3
 
