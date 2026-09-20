@@ -304,9 +304,15 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
       ctx.save();
       ctx.translate(pt.x, pt.y);
-      // Canvas 0 degrees points right, while aircraft track 0 degrees is north.
-      // -90 degrees aligns the vector nose with track 0 / north.
-      ctx.rotate((heading - 90) * Math.PI / 180);
+      // Every shape below (including the helicopter, as of this fix - see its coordinates)
+      // is drawn nose-up in its own local coordinates, i.e. already pointing along track 0 /
+      // north at zero rotation. Canvas rotate() is clockwise for a positive angle, same
+      // direction compass headings increase in, so the aircraft's own track in degrees is
+      // the rotation to apply directly - no offset needed. (A previous version of this code
+      // assumed the shapes were drawn nose-right and applied an extra -90 degrees to
+      // compensate, which was wrong for these nose-up shapes and rotated every aircraft 90
+      // degrees off from its real track.)
+      ctx.rotate(heading * Math.PI / 180);
 
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
@@ -318,26 +324,30 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       ctx.beginPath();
 
       if (isHelicopter) {
-        // Compact top-down helicopter: rotor bar + body + tail boom.
-        ctx.ellipse(0, 0, 5.4, 2.9, 0, 0, Math.PI * 2);
+        // Compact top-down helicopter: rotor bar + body + tail boom. Nose-up (tail extends
+        // down/+Y) to match the other three shapes below, per the rotation comment above -
+        // this used to be drawn nose-right (tail extending in -X) instead, which needed the
+        // old rotation formula's extra -90 degrees to look right and was the other half of
+        // that bug; these coordinates are that same shape rotated 90 degrees to match.
+        ctx.ellipse(0, 0, 2.9, 5.4, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
         ctx.beginPath();
-        ctx.moveTo(-1, 1.7);
-        ctx.lineTo(-7.5, 1.7);
-        ctx.lineTo(-9, 2.2);
-        ctx.lineTo(-7.2, 0.9);
-        ctx.lineTo(-1, 0.9);
+        ctx.moveTo(1.7, 1);
+        ctx.lineTo(1.7, 7.5);
+        ctx.lineTo(2.2, 9);
+        ctx.lineTo(0.9, 7.2);
+        ctx.lineTo(0.9, 1);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
 
         ctx.beginPath();
-        ctx.moveTo(-5.5, -4.6);
-        ctx.lineTo(5.5, -4.6);
-        ctx.moveTo(-5.5, 4.6);
-        ctx.lineTo(5.5, 4.6);
+        ctx.moveTo(-4.6, 5.5);
+        ctx.lineTo(-4.6, -5.5);
+        ctx.moveTo(4.6, 5.5);
+        ctx.lineTo(4.6, -5.5);
         ctx.stroke();
       } else if (isLight) {
         // Small GA aircraft, deliberately narrow and slightly chunky like the reference.
