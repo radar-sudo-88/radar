@@ -53,6 +53,13 @@
  *                                            command. Each colour accepts the same syntax as
  *                                            HUE_RESTORE (name, hex, or white tone, @brightness),
  *                                            e.g. pattern all "red@100,warm@40,blue@70"
+ *   walk <light1,light2,...> [colour] [times]   only one light on at a time, stepping through the
+ *                                            list in the exact order you typed, e.g.
+ *                                            walk "Front door,Stairs,Near book shelf" red 3
+ *                                            -> Front door flashes red, then off; Stairs flashes
+ *                                            red, then off; Near book shelf flashes red, then
+ *                                            off; the whole walk repeats 3 times. times = how
+ *                                            many times through the full list (default 1).
  *   chase <lights> <colors> [order] [times] [reverse]   colours travel down the light list over
  *                                            time instead of all lights changing together, e.g.
  *                                            chase "a,b,c" red,green,blue
@@ -688,6 +695,52 @@ async function cmdChase(target, colorsWord, orderWord, timesWord, reverseWord) {
   console.log('done');
 }
 
+// walk: only one light on at a time, stepping through <lights> in the exact order given
+// (comma-separated, order preserved) - unlike pattern/chase, every other matched light stays
+// off while one is lit. Same colour each step. `times` repeats the whole walk that many times
+// in a row within this one call before restoring.
+async function cmdWalk(targetOrder, colourWord, timesWord) {
+  if (!targetOrder) throw new Error(`Usage: walk <light1,light2,...> [colour] [times]   e.g. walk "Front door,Stairs,Near book shelf" red 3`);
+  const cfg = getConfig();
+  const all = await fetchLights(cfg);
+  const names = targetOrder.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!names.length) throw new Error('walk: need at least one light name');
+  const lights = names.map((n) => {
+    const found = matchLights(all, n);
+    if (!found.length) throw new Error(`No light matches '${n}'. Run 'list' to see the names.`);
+    return found[0]; // first match per name, so the order you typed is exactly the walk order
+  });
+
+  let xy = RED_XY;
+  if (colourWord && colourWord.toLowerCase() !== 'red') {
+    const resolved = hexToXy(COLOURS[colourWord.toLowerCase()] || colourWord);
+    if (!resolved) throw new Error(`Unknown colour '${colourWord}'. Use: ${Object.keys(COLOURS).join(' ')} or a hex code like #ff8800`);
+    xy = resolved;
+  }
+  const times = timesWord != null ? Math.max(1, parseInt(timesWord, 10) || 1) : 1;
+
+  const snaps = lights.map(snapshot);
+  const onBody = (l) => (l.color
+    ? { on: { on: true }, dimming: { brightness: 100 }, color: { xy }, dynamics: { duration: 0 } }
+    : { on: { on: true }, dynamics: { duration: 0 } });
+  const phaseMs = Math.max(STEP_MS, 150);
+
+  console.log(`Walking ${lights.length} light(s) in order, ${times}x: ${names.join(' -> ')}`);
+  try {
+    for (let t = 0; t < times; t++) {
+      for (let i = 0; i < lights.length; i++) {
+        await putLight(cfg, lights[i].id, onBody(lights[i]));
+        await sleep(phaseMs);
+        await putLight(cfg, lights[i].id, offBody());
+        await sleep(100);
+      }
+    }
+  } finally {
+    await restoreLights(cfg, snaps);
+  }
+  console.log('done');
+}
+
 async function cmdState(target) {
   if (!target) throw new Error('Usage: state <light>   (part of a name, or "all")');
   const cfg = getConfig();
@@ -806,6 +859,7 @@ function cmdServe() {
     else if (cmd === 'blink' || cmd === 'flash') await cmdBlink(args[0], args[1], args[2]);
     else if (cmd === 'pattern' || cmd === 'sequence') await cmdPattern(args[0], args[1], args[2], args[3]);
     else if (cmd === 'chase') await cmdChase(args[0], args[1], args[2], args[3], args[4]);
+    else if (cmd === 'walk') await cmdWalk(args[0], args[1], args[2]);
     else if (cmd === 'state') await cmdState(args[0]);
     else if (cmd === 'save') await cmdSave(args[0]);
     else if (cmd === 'restore') await cmdRestore(args[0], args[1]);
