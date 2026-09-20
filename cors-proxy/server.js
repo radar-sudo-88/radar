@@ -80,6 +80,7 @@ const CONTENT_TYPES = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
 };
 
 function serveStatic(req, res, pathname) {

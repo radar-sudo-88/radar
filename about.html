@@ -11,6 +11,10 @@
   <link rel="icon" href="favicon.ico" sizes="32x32">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Aero Sentry">
 
   <style>
     /* Same palette as the radar (see styles.css) - kept inline so this page scrolls normally;
@@ -185,6 +189,52 @@
       color: var(--accent-blue);
     }
 
+    /* Weather radar facts */
+    ul.facts { list-style: none; display: grid; gap: 0.7rem; margin-top: 1rem; }
+    ul.facts li { padding-left: 1.1rem; position: relative; }
+    ul.facts li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.55em;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-blue);
+      box-shadow: 0 0 8px var(--accent-blue);
+    }
+
+    /* Install button */
+    .btn {
+      font: inherit;
+      font-size: 0.85rem;
+      color: #030704;
+      background: var(--accent-green);
+      border: none;
+      border-radius: 4px;
+      padding: 0.6rem 1.2rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+    }
+    .btn[hidden] { display: none; }
+    .hint { font-size: 0.9rem; color: var(--text-body); }
+    .hint[hidden] { display: none; }
+
+    /* Credits + disclaimer */
+    dl.credits { display: grid; gap: 0.55rem; font-size: 0.92rem; }
+    dl.credits > div { display: grid; gap: 0.1rem; }
+    @media (min-width: 40rem) {
+      dl.credits > div { grid-template-columns: 13rem 1fr; gap: 1rem; }
+    }
+    dl.credits dt { color: var(--text-main); }
+    section a { color: var(--accent-blue); text-decoration: none; border-bottom: 1px dotted var(--accent-blue); }
+    section a:hover { border-bottom-style: solid; }
+    .disclaimer { border-left: 3px solid var(--accent-red); }
+    .disclaimer p { font-size: 0.92rem; }
+    .disclaimer p + p { margin-top: 0.7rem; }
+    .privacy { margin-top: 1.1rem; }
+
     footer { margin-top: 2.5rem; text-align: center; }
     .credit {
       margin-top: 1.2rem;
@@ -291,12 +341,135 @@
       </dl>
     </section>
 
+    <section id="weather">
+      <h2>Weather radar overlay</h2>
+      <p>
+        The scope shows more than aircraft. A live <strong>rain radar layer</strong> sits underneath the
+        blips, so you can watch weather moving through your area alongside the traffic.
+      </p>
+      <ul class="facts">
+        <li>
+          <strong>Source.</strong> Precipitation radar from <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>'s
+          public weather-maps data.
+        </li>
+        <li>
+          <strong>Always current.</strong> The newest available radar frame is loaded automatically and
+          swapped in every 10 minutes, with no page reload. It shows recently observed rain and snow
+          &mdash; it is not a forecast.
+        </li>
+        <li>
+          <strong>Kept out of the way.</strong> It is drawn as a soft, translucent backdrop under the
+          aircraft, so blips, labels and the sweep stay readable. Where the shading is stronger, the
+          precipitation is heavier.
+        </li>
+        <li>
+          <strong>Approximate detail.</strong> The free radar tiles are coarse, so at the 35 NM scope the
+          shading looks blocky. It shows where rain is falling, not exactly where its edges are.
+        </li>
+        <li>
+          <strong>Not for weather warnings.</strong> For official warnings and forecasts, use the
+          <a href="https://www.metoffice.gov.uk/" target="_blank" rel="noopener">Met Office</a>.
+        </li>
+      </ul>
+    </section>
+
+    <section id="install">
+      <h2>Install the app</h2>
+      <p style="margin-bottom: 1rem;">
+        Aero Sentry can be installed like an app, opening full-screen from your home screen or desktop.
+      </p>
+      <button type="button" class="btn" id="install-btn" hidden>Install Aero Sentry</button>
+      <p class="hint" id="install-hint">
+        <strong>iPhone / iPad:</strong> tap Share, then &ldquo;Add to Home Screen&rdquo;.
+        <strong>Android / Chrome:</strong> open the browser menu and choose &ldquo;Install app&rdquo; or
+        &ldquo;Add to Home screen&rdquo;.
+      </p>
+    </section>
+
+    <section id="credits">
+      <h2>Data &amp; credits</h2>
+      <div class="card">
+        <dl class="credits">
+          <div><dt>Live aircraft positions</dt><dd><a href="https://adsb.fi/" target="_blank" rel="noopener">adsb.fi</a></dd></div>
+          <div><dt>Flight routes</dt><dd>
+            <a href="https://adsb.lol/" target="_blank" rel="noopener">adsb.lol</a>,
+            <a href="https://www.adsbdb.com/" target="_blank" rel="noopener">adsbdb</a>,
+            <a href="https://hexdb.io/" target="_blank" rel="noopener">hexdb.io</a> and the
+            <a href="https://opensky-network.org/" target="_blank" rel="noopener">OpenSky Network</a>
+          </dd></div>
+          <div><dt>Aircraft photos</dt><dd><a href="https://www.planespotters.net/" target="_blank" rel="noopener">Planespotters.net</a></dd></div>
+          <div><dt>Airline logos</dt><dd>
+            <a href="https://github.com/Jxck-S/airline-logos" target="_blank" rel="noopener">Jxck-S/airline-logos</a> and
+            <a href="https://www.airhex.com/" target="_blank" rel="noopener">AirHex</a>
+          </dd></div>
+          <div><dt>Weather radar</dt><dd>Weather data by <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a></dd></div>
+          <div><dt>Base map</dt><dd>&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a></dd></div>
+          <div><dt>Postcode lookup</dt><dd><a href="https://postcodes.io/" target="_blank" rel="noopener">postcodes.io</a></dd></div>
+          <div><dt>Map library</dt><dd><a href="https://leafletjs.com/" target="_blank" rel="noopener">Leaflet</a></dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section id="disclaimer">
+      <h2>Disclaimer</h2>
+      <div class="card disclaimer">
+        <p>
+          <strong>Aero Sentry is for information and enjoyment only.</strong> It must not be used for
+          navigation, flight planning, air traffic purposes, or any safety-critical decision.
+        </p>
+        <p>
+          ADS-B data comes from volunteer-run networks and can be delayed, incomplete or wrong. Aircraft
+          may be missing, mislabelled or shown in the wrong place, and some aircraft &mdash; military
+          ones in particular &mdash; don't broadcast, or aren't shown. Alerts are best-effort and are
+          not guaranteed. The weather radar is approximate and can be around 10 minutes old.
+        </p>
+        <p>
+          This is an independent project. It is not affiliated with, or endorsed by, any airline, air
+          force, air navigation service provider or data source named above. You use it at your own risk.
+        </p>
+      </div>
+      <p class="hint privacy">
+        <strong>Privacy:</strong> your postcode is stored only in a cookie on your own device, so the radar
+        remembers your area. It is sent to postcodes.io to be turned into map coordinates.
+      </p>
+    </section>
+
     <footer>
       <a class="back" href="./">&larr; Back to radar</a>
       <p class="credit">Co-built by father and son.</p>
     </footer>
   </div>
 
+  <script>
+    // "Install app" button: Chromium fires beforeinstallprompt when the site is installable. Already
+    // installed (running standalone) -> hide the whole section. iOS never fires it, so the text hint stays.
+    (function () {
+      var section = document.getElementById('install');
+      var btn = document.getElementById('install-btn');
+      var hint = document.getElementById('install-hint');
+      var deferred = null;
+      var standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone;
+      if (standalone) { section.hidden = true; return; }
+      window.addEventListener('beforeinstallprompt', function (e) {
+        e.preventDefault();
+        deferred = e;
+        btn.hidden = false;
+        hint.hidden = true;
+      });
+      btn.addEventListener('click', function () {
+        if (!deferred) return;
+        deferred.prompt();
+        deferred.userChoice.then(function () { deferred = null; btn.hidden = true; });
+      });
+      window.addEventListener('appinstalled', function () { section.hidden = true; });
+    })();
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').catch(function () {});
+      });
+    }
+  </script>
   <script>
     // The radar also runs as an unattended wall display. If someone taps through to this page there
     // and walks away, send the screen back to the radar after 5 idle minutes rather than leaving it here.

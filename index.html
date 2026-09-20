@@ -9,6 +9,13 @@
   <link rel="icon" href="favicon.ico" sizes="32x32">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <!-- Installable app (PWA): see manifest.webmanifest and sw.js -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#030704">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Aero Sentry">
   
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
 
@@ -124,6 +131,14 @@
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
           onerror="console.error('LEAFLET FAILED TO LOAD - CHECK NETWORK');"></script>
   <script src="app.js"></script>
+  <script>
+    // Service worker (installability + offline shell). Never blocks or breaks the radar if it fails.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').catch(function () {});
+      });
+    }
+  </script>
 
 </body>
 </html>
