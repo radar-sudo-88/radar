@@ -58,6 +58,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const crypto = require('crypto');
 
 // --- Static file serving -----------------------------------------------
 // This proxy now also serves the site itself (index.html, 404.html, assets)
@@ -143,6 +144,71 @@ const ROUTESET_PATH = '/api/0/routeset';
 
 // path -> { body, status, contentType, expiresAt } — point-lookup cache only.
 const cache = new Map();
+
+// --- Simulated aircraft (server-side test injection) --------------------
+// A remote equivalent of app.js's own local testAircraft/triggerTestSquawk hook (see there),
+// but server-side: POST here and whatever gets injected shows up for EVERY current viewer of
+// the site (the kiosk included) within one poll cycle, without needing physical/browser-console
+// access to whichever screen is actually displaying it. Requires the SIMULATE_KEY env var to be
+// set - if it isn't, this endpoint 404s as if it doesn't exist at all, rather than existing in
+// a wide-open, unauthenticated state.
+//
+//   SIMULATE_KEY=<a long random string, e.g. `openssl rand -hex 32`>
+//
+// Usage (see handleSimulate() below for the full field list and defaults):
+//   curl -X POST "https://aero-sentry.co.uk/api/simulate" \
+//     -H "X-Simulate-Key: <SIMULATE_KEY>" -H "Content-Type: application/json" \
+//     -d '{"squawk":"7700","t":"F35","flight":"TESTEMG "}'
+//   curl "https://aero-sentry.co.uk/api/simulate?key=<SIMULATE_KEY>"        # list active
+//   curl -X DELETE "https://aero-sentry.co.uk/api/simulate?key=<SIMULATE_KEY>"  # clear all
+//
+// hex -> { hex, flight, lat, lon, alt_baro, gs, track, squawk, t, category, expiresAt }
+const simulatedAircraft = new Map();
+const SIMULATE_KEY = process.env.SIMULATE_KEY || null;
+const SIMULATE_PATH = '/api/simulate';
+const SIMULATE_DEFAULT_TTL_SECONDS = 90; // matches app.js's own TEST_AIRCRAFT_TTL_MS
+const SIMULATE_MAX_TTL_SECONDS = 600; // 10 min hard cap - a forgotten test shouldn't run forever
+
+// Constant-time string compare so a wrong key can't be brute-forced faster by timing how long
+// the comparison takes (a real, if narrow, risk for an endpoint that's reachable from the open
+// internet). Buffer.from() on mismatched lengths would make crypto.timingSafeEqual() throw
+// instead of just returning false, so a same-length dummy comparison is run in that case purely
+// to keep the timing profile consistent - its result is discarded either way.
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function pruneExpiredSimulated(now) {
+  for (const [hex, ac] of simulatedAircraft) {
+    if (ac.expiresAt <= now) simulatedAircraft.delete(hex);
+  }
+}
+
+// Splices any still-active simulated aircraft into an upstream point-lookup response body, right
+// before it's sent - deliberately NOT before it's cached (see handlePointLookup), so simulated
+// aircraft stay live/removable independent of the real-data cache TTL. Fails open: if the body
+// isn't valid JSON or isn't the { ac: [...] } / { aircraft: [...] } shape expected, the original
+// body is returned untouched rather than risking corrupting a real response.
+function injectSimulatedAircraft(rawBody) {
+  pruneExpiredSimulated(Date.now());
+  if (simulatedAircraft.size === 0) return rawBody;
+  try {
+    const data = JSON.parse(rawBody);
+    const injected = [...simulatedAircraft.values()].map(({ expiresAt, ...ac }) => ac);
+    if (Array.isArray(data.ac)) data.ac = data.ac.concat(injected);
+    else if (Array.isArray(data.aircraft)) data.aircraft = data.aircraft.concat(injected);
+    else return rawBody; // unexpected shape - leave it alone rather than guess
+    return JSON.stringify(data);
+  } catch {
+    return rawBody; // malformed upstream JSON - not this function's problem to fix
+  }
+}
 
 // --- Stats / logging ---------------------------------------------------
 // Answers exactly the kind of question that's come up repeatedly in
@@ -296,7 +362,7 @@ async function handlePointLookup(req, res, url, cors) {
         // which would serve a stale response - including a stale/missing CORS
         // header - to a different context than the one that generated it.
       },
-      cached.body
+      injectSimulatedAircraft(cached.body)
     );
     return;
   }
@@ -335,13 +401,122 @@ async function handlePointLookup(req, res, url, cors) {
       expiresAt: Date.now() + ttlSeconds * 1000,
     });
 
-    send(res, upstreamResponse.status, { ...cors, 'Content-Type': contentType }, body);
+    send(res, upstreamResponse.status, { ...cors, 'Content-Type': contentType }, injectSimulatedAircraft(body));
   } catch (err) {
     const reason = err.name === 'AbortError' ? 'timeout' : 'network_error';
     recordResult('adsbFi', { ok: false, reason, durationMs: Date.now() - startedAt });
     console.error(`adsb.fi upstream fetch failed (${reason}):`, err);
     send(res, 502, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Upstream fetch failed' }));
   }
+}
+
+// GET lists currently-active simulated aircraft; POST adds one (or several, via
+// {"aircraft":[...]}); DELETE clears all, or one by ?hex=. Key required on every method, via
+// either the X-Simulate-Key header or a ?key= query param (the latter mainly so it's pastable
+// straight into a browser URL bar for the GET/list case without needing curl).
+//
+// POST body fields, all optional with sensible defaults for a quick test - only squawk/t/flight
+// are usually worth setting explicitly:
+//   hex          random SIMxxxxxx if omitted
+//   flight       "SIMTEST " if omitted
+//   lat, lon     central-England default if omitted - set these explicitly to place it somewhere
+//                a particular viewer's postcode-based radar will actually pick it up (see
+//                resolveStationCoords() in app.js - viewers can be centred anywhere now)
+//   alt_baro     10000 if omitted
+//   gs           300 (knots) if omitted
+//   track        random 0-359 if omitted
+//   squawk       "1200" if omitted - set to 7500/7600/7700 to test the emergency siren/lights/
+//                speech path, or leave as a normal squawk with t/category set to a military type
+//                (F35, F16, C130, ...) to test the military proximity chirp path instead
+//   t            "F35" if omitted (ADS-B aircraft type code)
+//   category     "A5" if omitted (ADS-B emitter category)
+//   ttlSeconds   how long it stays live, default 90, capped at 600
+async function handleSimulate(req, res, url, cors) {
+  if (!SIMULATE_KEY) {
+    send(res, 404, { ...cors, 'Content-Type': 'text/plain' }, 'Not found');
+    return;
+  }
+
+  const providedKey = req.headers['x-simulate-key'] || url.searchParams.get('key') || '';
+  if (!timingSafeEqualStr(providedKey, SIMULATE_KEY)) {
+    send(res, 401, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Unauthorized' }));
+    return;
+  }
+
+  const now = Date.now();
+  pruneExpiredSimulated(now);
+
+  if (req.method === 'GET') {
+    const active = [...simulatedAircraft.values()].map(({ expiresAt, ...ac }) => ({
+      ...ac,
+      expiresInSeconds: Math.round((expiresAt - now) / 1000),
+    }));
+    send(res, 200, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ active }));
+    return;
+  }
+
+  if (req.method === 'DELETE') {
+    const hex = url.searchParams.get('hex');
+    if (hex) simulatedAircraft.delete(hex.toUpperCase());
+    else simulatedAircraft.clear();
+    send(res, 200, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, active: simulatedAircraft.size }));
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    send(res, 405, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Method not allowed - use GET, POST or DELETE' }));
+    return;
+  }
+
+  let bodyBuffer;
+  try {
+    bodyBuffer = await readRequestBody(req);
+  } catch (err) {
+    send(res, 413, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Request body too large or unreadable' }));
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(bodyBuffer.toString('utf8') || '{}');
+  } catch (err) {
+    send(res, 400, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Body must be valid JSON' }));
+    return;
+  }
+
+  const entries = Array.isArray(payload.aircraft) ? payload.aircraft : [payload];
+  if (!entries.length) {
+    send(res, 400, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Nothing to inject - empty body/array' }));
+    return;
+  }
+
+  const created = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const hex = String(entry.hex || `SIM${Math.floor(Math.random() * 900000 + 100000)}`).toUpperCase();
+    const ttlSeconds = Math.min(
+      SIMULATE_MAX_TTL_SECONDS,
+      Math.max(1, Number(entry.ttlSeconds ?? payload.ttlSeconds) || SIMULATE_DEFAULT_TTL_SECONDS)
+    );
+    const ac = {
+      hex,
+      flight: entry.flight != null ? String(entry.flight) : 'SIMTEST ',
+      lat: Number.isFinite(entry.lat) ? entry.lat : 52.9529,
+      lon: Number.isFinite(entry.lon) ? entry.lon : -0.9547,
+      alt_baro: Number.isFinite(entry.alt_baro) ? entry.alt_baro : 10000,
+      gs: Number.isFinite(entry.gs) ? entry.gs : 300,
+      track: Number.isFinite(entry.track) ? entry.track : Math.floor(Math.random() * 360),
+      squawk: entry.squawk != null ? String(entry.squawk) : '1200',
+      t: entry.t != null ? String(entry.t) : 'F35',
+      category: entry.category != null ? String(entry.category) : 'A5',
+      expiresAt: now + ttlSeconds * 1000,
+    };
+    simulatedAircraft.set(hex, ac);
+    created.push({ ...ac, expiresAt: undefined, ttlSeconds });
+  }
+
+  console.log(`[SIMULATE] Injected ${created.length} aircraft: ${created.map((a) => a.hex).join(', ')}`);
+  send(res, 200, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ ok: true, created }));
 }
 
 async function handleRouteset(req, res, cors) {
@@ -459,6 +634,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === SIMULATE_PATH) {
+      await handleSimulate(req, res, url, cors);
+      return;
+    }
+
     // Anything else GET - serve it as a static file from the repo root
     // (index.html, 404.html, spritesheet assets, etc). CORS headers aren't
     // needed here since these are same-origin page loads, not cross-origin
@@ -505,6 +685,7 @@ setInterval(() => {
   for (const [key, entry] of cache) {
     if (entry.expiresAt <= now) cache.delete(key);
   }
+  pruneExpiredSimulated(now);
 }, 60_000).unref();
 
 server.listen(PORT, '0.0.0.0', () => {
