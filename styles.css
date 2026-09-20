@@ -917,6 +917,9 @@
     .ad-stat-value.down, .ad-stat-value.alert { color: var(--accent-red); }
 
     .ad-section { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--card-border); }
+    /* The AI overview (.ad-profile) is now the first thing in the panel (see
+       buildAircraftDetailPanel in app.js) - it needs no separator line/space floating above it. */
+    .aircraft-detail > .ad-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
     .ad-section-title {
       display: flex;
       align-items: center;

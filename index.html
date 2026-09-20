@@ -135,9 +135,36 @@
   <script src="app.js"></script>
   <script>
     // Service worker (installability + offline shell). Never blocks or breaks the radar if it fails.
+    //
+    // This is a wall board: it's typically opened once in a kiosk browser and left running for
+    // days. Two things that matters for that use case, neither of which "network-first" alone
+    // gives you:
+    //   1. A fresh load shouldn't show anything left over from a previous visit/version - so
+    //      wipe this origin's Cache Storage every time the page loads, before the service worker
+    //      gets a chance to serve anything from it. It'll simply repopulate from the network as
+    //      this load's requests go out.
+    //   2. A tab that's been open for days needs to notice a new deploy itself (nobody's there to
+    //      hit refresh) - so force an update check on load, and reload once a new worker actually
+    //      takes control, rather than carrying on running whatever app.js happened to be in memory
+    //      when the tab was first opened.
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
-        navigator.serviceWorker.register('sw.js').catch(function () {});
+        if ('caches' in window) {
+          caches.keys()
+            .then(function (keys) { return Promise.all(keys.map(function (key) { return caches.delete(key); })); })
+            .catch(function () {});
+        }
+
+        navigator.serviceWorker.register('sw.js').then(function (reg) {
+          reg.update().catch(function () {});
+        }).catch(function () {});
+
+        let reloadedForUpdate = false;
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+          if (reloadedForUpdate) return;
+          reloadedForUpdate = true;
+          window.location.reload();
+        });
       });
     }
   </script>

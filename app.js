@@ -1590,16 +1590,26 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     function initMap() {
       map = L.map('map', {
-        zoomControl: false,
+        zoomControl: true,
         attributionControl: false,
-        dragging: false,
-        scrollWheelZoom: false,
-        doubleClickZoom: false,
-        boxZoom: false,
-        keyboard: false,
-        touchZoom: false,
-        tap: false
+        dragging: true,
+        scrollWheelZoom: true,
+        doubleClickZoom: true,
+        boxZoom: true,
+        keyboard: true,
+        touchZoom: true,
+        tap: true
       }).setView([userConfig.lat, userConfig.lon], 10);
+
+      // The scope overlay (rings/crosshair/aircraft blips) is drawn from cached pixel
+      // points that are normally only refreshed on poll/resize (see
+      // recomputeMapProjectionCache below) - now that the map can be panned/zoomed by the
+      // user, those caches also need refreshing as the map moves, or the canvas overlay
+      // would drift away from / desync with the underlying map tiles.
+      map.on('move zoom', () => {
+        recomputeMapProjectionCache();
+        recomputeAircraftPixelCache();
+      });
 
       L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap contributors'
@@ -2133,6 +2143,14 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         const cardId = `mil-card-${ac.hex}-${index}`;
         const card = document.createElement('div');
         card.className = 'ac-card';
+        card.style.cursor = 'pointer';
+        card.title = 'Tap for aircraft details';
+        card.addEventListener('click', () => {
+          // Prefer the live snapshot (matches what scope-click selection uses) in case this
+          // card's own `ac` object has since been superseded by a later poll.
+          const live = liveAircraft.find((a) => a.hex === ac.hex) || ac;
+          selectAircraft(live);
+        });
         card.innerHTML = `
           <div class="ac-thumb" id="${cardId}-thumb">
             <span style="font-size:0.55rem; color:var(--accent-military); font-weight:bold; text-align:center;">MIL</span>
@@ -2813,6 +2831,13 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (portrait) panel.dataset.side = pt && pt.y > viewH / 2 ? 'top' : 'bottom';
       else panel.dataset.side = pt && pt.x > viewW / 2 ? 'left' : 'right';
 
+      // AI overview goes first - the very top of the panel, above the header/close button and
+      // everything else - so it's the first thing visible rather than something you have to
+      // scroll past the stats/route to find.
+      const profile = adEl('div', 'ad-section ad-profile');
+      profile.id = 'ad-profile';
+      panel.appendChild(profile);
+
       const head = adEl('div', 'ad-head');
       const titles = adEl('div', 'ad-titles');
       const callsign = adEl('div', 'ad-callsign');
@@ -2846,10 +2871,6 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const route = adEl('div', 'ad-section ad-route');
       route.id = 'ad-route';
       panel.appendChild(route);
-
-      const profile = adEl('div', 'ad-section ad-profile');
-      profile.id = 'ad-profile';
-      panel.appendChild(profile);
 
       panel.classList.remove('hidden');
     }
