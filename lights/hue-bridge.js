@@ -70,6 +70,16 @@
  *                                            times = how many full laps before it stops and
  *                                            restores (default 1 - see below to run it more than
  *                                            once). reverse flips the direction of travel.
+ *   countdown <light> <seconds>               green -> yellow -> red as time runs out, one step
+ *                                            per second, then a couple of quick red flashes at
+ *                                            zero. Restores afterwards. e.g. countdown all 300
+ *   rainbow <light> [times] [duration_ms]    smooth hue rotation through the full colour wheel.
+ *                                            times = full loops (default 1), duration_ms = how
+ *                                            long one loop takes (default 4000). Restores after
+ *                                            the last loop. e.g. rainbow all 2 4000
+ *   status                                   read-only health check: is the bridge reachable, is
+ *                                            the local server (serve) up on its port, when did the
+ *                                            last flash run. Unlike test, this never touches lights.
  *   state <light>                            everything the bridge reports for that light
  *   save [snapshot]  |  restore [snapshot] [light]   snapshot/put back all lights (name defaults to
  *                                            "default" - unrelated to the bridge profile name above).
@@ -741,6 +751,131 @@ async function cmdWalk(targetOrder, colourWord, timesWord) {
   console.log('done');
 }
 
+// HSL (hue in degrees, 0-360) -> hex, then through the existing hexToXy conversion. s/l fixed
+// at fully-saturated, mid-lightness so every hue comes out vivid rather than washed out.
+function hueDegToXy(hueDeg) {
+  const h = ((hueDeg % 360) + 360) % 360;
+  const c = 1; // chroma at s=100/l=50
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  let r1, g1, b1;
+  if (h < 60) [r1, g1, b1] = [c, x, 0];
+  else if (h < 120) [r1, g1, b1] = [x, c, 0];
+  else if (h < 180) [r1, g1, b1] = [0, c, x];
+  else if (h < 240) [r1, g1, b1] = [0, x, c];
+  else if (h < 300) [r1, g1, b1] = [x, 0, c];
+  else [r1, g1, b1] = [c, 0, x];
+  const toHex = (v) => Math.round(v * 255).toString(16).padStart(2, '0');
+  return hexToXy(`${toHex(r1)}${toHex(g1)}${toHex(b1)}`);
+}
+
+// countdown: green -> yellow -> red as <seconds> ticks down, one step per second, then a few
+// quick red flashes at zero before restoring. Hue runs 120 (green) down to 0 (red), passing
+// through 60 (yellow) at the midpoint, so the colour itself communicates time remaining.
+async function cmdCountdown(target, secondsWord) {
+  if (!target || secondsWord == null) throw new Error('Usage: countdown <light> <seconds>');
+  const seconds = Math.max(1, parseInt(secondsWord, 10) || 0);
+  if (!seconds) throw new Error(`countdown: '${secondsWord}' is not a valid number of seconds`);
+  const cfg = getConfig();
+  const lights = matchLights(await fetchLights(cfg), target);
+  if (!lights.length) throw new Error(`No light matches '${target}'. Run 'list' to see the names.`);
+  const snaps = lights.map(snapshot);
+
+  console.log(`Counting down ${seconds}s on ${lights.length} light(s): ${snaps.map((s) => s.name).join(', ')}`);
+  try {
+    for (let sec = seconds; sec >= 0; sec--) {
+      const t = (seconds - sec) / seconds; // 0 at the start, 1 at zero
+      const xy = hueDegToXy(120 * (1 - t));
+      await Promise.allSettled(lights.map((l) => putLight(cfg, l.id,
+        l.color ? { on: { on: true }, dimming: { brightness: 100 }, color: { xy }, dynamics: { duration: 900 } }
+                : { on: { on: true }, dynamics: { duration: 900 } })));
+      if (sec > 0) await sleep(1000);
+    }
+    // finish with a couple of quick red flashes so zero is unmistakable even at a glance
+    for (let i = 0; i < 2; i++) {
+      await Promise.allSettled(lights.map((l) => putLight(cfg, l.id, redBody())));
+      await sleep(300);
+      await Promise.allSettled(lights.map((l) => putLight(cfg, l.id, offBody())));
+      await sleep(300);
+    }
+  } finally {
+    await restoreLights(cfg, snaps);
+  }
+  console.log('done');
+}
+
+// rainbow: smooth hue rotation through the full colour wheel. `times` = full loops (default 1),
+// `duration` = ms per loop (default 4000). Runs 36 steps (10 degrees each) per loop, spaced
+// evenly across `duration`, with a matching crossfade so it looks like a rotation rather than
+// a strobe.
+async function cmdRainbow(target, timesWord, durationWord) {
+  if (!target) throw new Error('Usage: rainbow <light> [times] [duration_ms]   e.g. rainbow all 2 4000');
+  const times = timesWord != null ? Math.max(1, parseInt(timesWord, 10) || 1) : 1;
+  const duration = durationWord != null ? Math.max(500, parseInt(durationWord, 10) || 4000) : 4000;
+  const cfg = getConfig();
+  const lights = matchLights(await fetchLights(cfg), target);
+  if (!lights.length) throw new Error(`No light matches '${target}'. Run 'list' to see the names.`);
+  const snaps = lights.map(snapshot);
+
+  const stepsPerLoop = 36; // 10 degrees per step
+  const stepMs = Math.max(80, Math.round(duration / stepsPerLoop));
+  console.log(`Rainbow on ${lights.length} light(s), ${times} loop(s) of ${duration}ms`);
+  try {
+    for (let loop = 0; loop < times; loop++) {
+      for (let i = 0; i < stepsPerLoop; i++) {
+        const xy = hueDegToXy(i * (360 / stepsPerLoop));
+        await Promise.allSettled(lights.map((l) => putLight(cfg, l.id,
+          l.color ? { on: { on: true }, dimming: { brightness: 100 }, color: { xy }, dynamics: { duration: stepMs } }
+                  : { on: { on: true }, dynamics: { duration: stepMs } })));
+        await sleep(stepMs);
+      }
+    }
+  } finally {
+    await restoreLights(cfg, snaps);
+  }
+  console.log('done');
+}
+
+// status: a read-only health check - does NOT touch any lights. Checks the "default" bridge is
+// reachable, whether the local `serve` server is up on LIGHTS_PORT, and when the last flash ran
+// (from the preflash snapshot every flash writes). Unlike `test`, nothing here fires a flash.
+function httpGetText(url, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.get(url, { timeout: timeoutMs || 2000 }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timed out' }); });
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+  });
+}
+
+async function cmdStatus() {
+  console.log('Bridge (profile "default"):');
+  try {
+    const cfg = getConfig('default');
+    const start = Date.now();
+    const lights = await fetchLights(cfg);
+    console.log(`  reachable - ${cfg.bridge} - ${lights.length} light(s) - ${Date.now() - start}ms`);
+  } catch (err) {
+    console.log(`  NOT reachable - ${err.message}`);
+  }
+
+  console.log(`Local server (127.0.0.1:${LIGHTS_PORT}):`);
+  const health = await httpGetText(`http://127.0.0.1:${LIGHTS_PORT}/health`, 1500);
+  if (health.ok) console.log('  up - /health responded ok');
+  else console.log(`  NOT running - ${health.error || `HTTP ${health.status}`} (start it with: serve)`);
+
+  console.log('Last flash:');
+  const all = readState();
+  if (all.preflash) {
+    const snaps = all.preflash.lights || [];
+    console.log(`  ${all.preflash.saved} - ${snaps.length} light(s): ${snaps.map((s) => s.name).join(', ')}`);
+  } else {
+    console.log('  none recorded yet');
+  }
+}
+
 async function cmdState(target) {
   if (!target) throw new Error('Usage: state <light>   (part of a name, or "all")');
   const cfg = getConfig();
@@ -860,6 +995,9 @@ function cmdServe() {
     else if (cmd === 'pattern' || cmd === 'sequence') await cmdPattern(args[0], args[1], args[2], args[3]);
     else if (cmd === 'chase') await cmdChase(args[0], args[1], args[2], args[3], args[4]);
     else if (cmd === 'walk') await cmdWalk(args[0], args[1], args[2]);
+    else if (cmd === 'countdown') await cmdCountdown(args[0], args[1]);
+    else if (cmd === 'rainbow') await cmdRainbow(args[0], args[1], args[2]);
+    else if (cmd === 'status') await cmdStatus();
     else if (cmd === 'state') await cmdState(args[0]);
     else if (cmd === 'save') await cmdSave(args[0]);
     else if (cmd === 'restore') await cmdRestore(args[0], args[1]);
