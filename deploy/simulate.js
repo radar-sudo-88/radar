@@ -14,8 +14,11 @@
  *   node deploy/simulate.js clear [hex]           remove everything (or just one hex)
  *
  * Options (after the preset):
- *   --lat <n> --lon <n>      where to put it (default: server default, central England - set this
- *                            to somewhere inside YOUR radar circle)
+ *   --postcode <UK postcode> where to put it, looked up via postcodes.io (same as the radar page).
+ *                            Works with or without the space, quoted or not: --postcode "NG1 1AA"
+ *   --lat <n> --lon <n>      or give coordinates directly (win over --postcode). With neither, it
+ *                            lands at the server default, central England - set one of these to
+ *                            somewhere inside YOUR radar circle
  *   --alt <ft>  --gs <kt>  --track <deg>
  *   --flight <callsign>  --hex <hex>  --squawk <code>  --type <ICAO type>  --category <A0-A7>
  *   --ttl <seconds>          how long it stays (default 90, server caps at 600)
@@ -46,7 +49,7 @@ const DEFAULT_LAT = 52.9529; // same as server.js's default
 const DEFAULT_LON = -0.9547;
 
 const NUMERIC = ['lat', 'lon', 'alt', 'gs', 'track', 'ttl', 'count'];
-const STRING = ['flight', 'hex', 'squawk', 'type', 'category', 'url', 'key'];
+const STRING = ['flight', 'hex', 'squawk', 'type', 'category', 'url', 'key', 'postcode'];
 
 function die(msg) { console.error(`ERROR: ${msg}`); process.exit(1); }
 
@@ -60,8 +63,10 @@ function parseArgs(argv) {
     const [rawName, inline] = a.slice(2).split(/=(.*)/s);
     const name = rawName.toLowerCase();
     if (!NUMERIC.includes(name) && !STRING.includes(name)) die(`unknown option --${name} (try --help)`);
-    const val = inline !== undefined ? inline : argv[++i];
+    let val = inline !== undefined ? inline : argv[++i];
     if (val === undefined) die(`--${name} needs a value`);
+    // Unquoted "--postcode NG1 1AA" arrives as two args - glue the inward code back on.
+    if (name === 'postcode' && /^[a-z0-9]{2,4}$/i.test(val) && /^\d[a-z]{2}$/i.test(argv[i + 1] || '')) val += argv[++i];
     if (NUMERIC.includes(name)) {
       const n = Number(val);
       if (!Number.isFinite(n)) die(`--${name} must be a number, got "${val}"`);
@@ -100,6 +105,27 @@ function findKey(opts) {
     if (k) return k;
   } catch { /* no key file */ }
   return keyFromSystemd();
+}
+
+// Same normalisation and lookup as app.js (normalizePostcode/geocodePostcode).
+async function geocodePostcode(raw) {
+  const compact = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+  if (compact.length < 5 || compact.length > 7) die(`"${raw}" doesn't look like a UK postcode`);
+  const postcode = `${compact.slice(0, -3)} ${compact.slice(-3)}`;
+  let res;
+  try {
+    res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (err) {
+    die(`postcode lookup failed (${(err.cause && err.cause.message) || err.message}) - is the Pi online? Use --lat/--lon instead`);
+  }
+  if (res.status === 404) die(`postcodes.io doesn't know "${postcode}"`);
+  if (!res.ok) die(`postcode lookup failed: HTTP ${res.status}`);
+  const result = (await res.json()).result;
+  if (!result || !Number.isFinite(result.latitude) || !Number.isFinite(result.longitude)) die(`no coordinates for "${postcode}"`);
+  return { postcode, lat: result.latitude, lon: result.longitude };
 }
 
 async function call(base, key, method, query, body) {
@@ -162,6 +188,13 @@ async function main() {
   const presetName = PRESETS[cmd] ? cmd : ALIASES[cmd];
   if (!presetName) die(`unknown command "${cmd}" (emergency hijack radiofail military airliner list clear)`);
   const preset = PRESETS[presetName];
+
+  if (opts.postcode) {
+    const pc = await geocodePostcode(opts.postcode);
+    console.log(`${pc.postcode} -> ${pc.lat.toFixed(4)}, ${pc.lon.toFixed(4)}`);
+    if (opts.lat == null) opts.lat = pc.lat;
+    if (opts.lon == null) opts.lon = pc.lon;
+  }
 
   const count = Math.max(1, Math.floor(opts.count || 1));
   if (count > 50) die('--count max is 50');
