@@ -50,8 +50,17 @@
   <!-- Always-available corner button to change the saved postcode -->
   <button id="postcode-change-btn" type="button" title="Change your location">📍</button>
 
+  <!-- Opens the AI-written recap of today's notable traffic (built app.js-side; see
+       openDailySummaryPanel/requestDailySummary). -->
+  <button id="daily-summary-btn" type="button" title="Today's AI summary">📰</button>
+
   <!-- Link to the About page (plain relative href so it works from a site root or a subpath) -->
   <a id="about-link" href="about.html" title="About Aero Sentry" aria-label="About Aero Sentry">ℹ️</a>
+
+  <!-- AI-written recap of today's notable (military/alert) traffic. Built and filled by app.js
+       (see openDailySummaryPanel/renderDailySummaryPanel). Reuses the aircraft-detail panel's
+       visual language (ad-* classes) so it looks like part of the same feature, not a bolt-on. -->
+  <div id="daily-summary-panel" class="aircraft-detail hidden" data-side="right" role="dialog" aria-label="Today's AI summary"></div>
 
   <div id="burn-in-shield">
   <main>

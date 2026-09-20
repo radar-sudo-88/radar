@@ -228,6 +228,25 @@
       border-color: var(--accent-military);
     }
 
+    /* Daily-summary link: same look, one more slot to the left of About. */
+    #daily-summary-btn {
+      position: fixed;
+      top: 0.6rem;
+      right: 5.8rem;
+      z-index: 10002;
+      background: rgba(3, 7, 4, 0.75);
+      border: 1px solid var(--accent-amber-dim);
+      color: var(--accent-military);
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0.4rem 0.5rem;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    #daily-summary-btn:hover {
+      border-color: var(--accent-military);
+    }
+
     .pulse-dot {
       width: 8px;
       height: 8px;
@@ -920,6 +939,14 @@
     /* The AI overview (.ad-profile) is now the first thing in the panel (see
        buildAircraftDetailPanel in app.js) - it needs no separator line/space floating above it. */
     .aircraft-detail > .ad-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+    /* Confidence colour-coding: a left accent border on the whole AI box, set once the
+       Gemini reply's confidence field is known (see renderAircraftDetailProfile in app.js). At
+       "unknown" (still loading, or errored before a confidence value ever arrived) it's just a
+       neutral border rather than implying an answer that isn't there yet. */
+    .ad-profile { border-left: 3px solid var(--card-border); padding-left: 0.5rem; margin-left: -0.5rem; transition: border-color 0.2s; }
+    .ad-profile.conf-high { border-left-color: var(--accent-green); }
+    .ad-profile.conf-medium { border-left-color: var(--accent-military); }
+    .ad-profile.conf-low { border-left-color: var(--accent-red); }
     .ad-section-title {
       display: flex;
       align-items: center;
@@ -939,6 +966,18 @@
       font-size: 0.55rem;
       letter-spacing: 0.08em;
     }
+    /* Small dot next to the AI badge - the same confidence colour as the left border, so it
+       reads at a glance without scrolling down to the fine-print line at the bottom. */
+    .ad-conf-dot {
+      width: 0.4rem;
+      height: 0.4rem;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--card-border);
+    }
+    .ad-conf-dot.high { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+    .ad-conf-dot.medium { background: var(--accent-military); box-shadow: 0 0 4px var(--accent-military); }
+    .ad-conf-dot.low { background: var(--accent-red); box-shadow: 0 0 4px var(--accent-red); }
     .ad-route-row { display: flex; gap: 0.4rem; margin-bottom: 0.15rem; }
     .ad-route-label { flex: 0 0 3.4rem; color: var(--text-dim); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .ad-route-value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -958,10 +997,18 @@
     .ad-facts li { margin-bottom: 0.15rem; }
     .ad-dim { color: var(--text-dim); font-size: 0.68rem; }
     .ad-fine { margin-top: 0.3rem; color: var(--text-dim); font-size: 0.58rem; }
-    .ad-conf { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-    .ad-conf.high { color: var(--accent-green); }
-    .ad-conf.medium { color: var(--accent-military); }
-    .ad-conf.low { color: var(--accent-red); }
+    .ad-conf {
+      display: inline-block;
+      padding: 0.05rem 0.35rem;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .ad-conf.high { color: var(--accent-green); background: rgba(0, 255, 102, 0.08); }
+    .ad-conf.medium { color: var(--accent-military); background: rgba(255, 176, 0, 0.08); }
+    .ad-conf.low { color: var(--accent-red); background: rgba(255, 51, 51, 0.08); }
 
     .ad-retry {
       margin-top: 0.35rem;

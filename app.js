@@ -530,6 +530,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       feedStarted = true;
       const statusBar = document.getElementById('status-bar');
       if (statusBar) statusBar.textContent = formatStationLabel(userConfig.lat, userConfig.lon);
+      pruneOldDailyLogs();
 
       initKioskAudio();
       if ('speechSynthesis' in window) {
@@ -2052,7 +2053,84 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         renderFlightBoard(liveAircraft);
         updateNearestScrollboard(liveAircraft);
         refreshAircraftDetail();
+        recordDailyLogEntries(liveAircraft);
       }
+    }
+
+    // --- Daily sightings log (for the "📰 Today" AI summary panel) --------------------------
+    // A compact, privacy-conscious log kept in localStorage: one entry per distinct aircraft
+    // (by hex) per local calendar day, for military traffic and anything squawking an alert
+    // code - the same definition of "notable" this app already uses for audio/Hue alerts. No
+    // position, speed, or altitude is stored; just enough (type/operator/category/squawk) for
+    // a later AI recap of the day. Cleared automatically once the calendar day rolls over.
+    const DAILY_LOG_PREFIX = 'radarDailyLog:';
+    const DAILY_LOG_MAX_ENTRIES = 200;
+
+    function todayLocalKey() {
+      const d = new Date();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${d.getFullYear()}-${mm}-${dd}`;
+    }
+
+    function loadDailyLog() {
+      try {
+        const raw = localStorage.getItem(DAILY_LOG_PREFIX + todayLocalKey());
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch { return []; }
+    }
+
+    function saveDailyLog(log) {
+      try {
+        localStorage.setItem(DAILY_LOG_PREFIX + todayLocalKey(), JSON.stringify(log));
+      } catch { /* storage full/unavailable - the log just doesn't persist, nothing else breaks */ }
+    }
+
+    // Drop any log (and cached summary) from a previous day - keeps localStorage from growing
+    // forever on a kiosk that's never manually cleared, and stops the "Today" panel drifting
+    // across midnight without a page reload.
+    function pruneOldDailyLogs() {
+      try {
+        const today = todayLocalKey();
+        const staleKeys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key) continue;
+          if ((key.startsWith(DAILY_LOG_PREFIX) && key !== DAILY_LOG_PREFIX + today) ||
+              (key.startsWith(DAILY_SUMMARY_CACHE_PREFIX) && key !== DAILY_SUMMARY_CACHE_PREFIX + today)) {
+            staleKeys.push(key);
+          }
+        }
+        staleKeys.forEach((k) => localStorage.removeItem(k));
+      } catch { /* ignore */ }
+    }
+
+    function recordDailyLogEntries(acList) {
+      if (!Array.isArray(acList) || !acList.length) return;
+      const log = loadDailyLog();
+      if (log.length >= DAILY_LOG_MAX_ENTRIES) return;
+      const seenToday = new Set(log.map((e) => e.hex));
+      let changed = false;
+      for (const ac of acList) {
+        if (log.length >= DAILY_LOG_MAX_ENTRIES) break;
+        const alert = isAlertSquawk(ac);
+        const mil = isMilitary(ac);
+        if (!alert && !mil) continue;
+        if (!ac.hex || seenToday.has(ac.hex)) continue;
+        seenToday.add(ac.hex);
+        log.push({
+          hex: ac.hex,
+          t: (ac.t || '').trim() || null,
+          desc: (ac.desc || '').trim() || null,
+          category: mil ? 'military_other' : null,
+          operator: (ac.ownOp || '').trim() || null,
+          squawk: alert ? String(ac.squawk || '') : null,
+          emergency: alert,
+        });
+        changed = true;
+      }
+      if (changed) saveDailyLog(log);
     }
 
     function isMilitary(ac) {
@@ -2916,6 +2994,15 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const live = document.getElementById('ad-live');
       if (live) {
         live.textContent = '';
+        // Real registry data for this specific airframe (when adsb.fi's feed has it) - not an
+        // AI guess. The Gemini profile below only ever describes the aircraft TYPE (and is
+        // cached per-type across every airframe of that type), so an individual tail number's
+        // build year has to come from here, from the feed itself, or not be shown at all.
+        const yearBuilt = Number(ac.year);
+        if (Number.isInteger(yearBuilt) && yearBuilt >= 1900 && yearBuilt <= new Date().getFullYear()) {
+          const age = new Date().getFullYear() - yearBuilt;
+          live.appendChild(adStat('Age', `${age} yr${age === 1 ? '' : 's'} · built ${yearBuilt}`, null));
+        }
         const hasPos = Number.isFinite(ac.lat) && Number.isFinite(ac.lon);
         if (hasPos) {
           const dist = calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
@@ -3038,6 +3125,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const box = document.getElementById('ad-profile');
       if (!box || !selectedHex) return;
       box.textContent = '';
+      // Reset from any previous aircraft's confidence colouring - re-applied below once (and
+      // only once) a real confidence value is known for this one.
+      box.classList.remove('conf-high', 'conf-medium', 'conf-low');
 
       const title = adEl('div', 'ad-section-title');
       title.appendChild(adEl('span', null, 'Aircraft profile'));
@@ -3116,11 +3206,153 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       }
 
       const conf = ['high', 'medium', 'low'].includes(info.confidence) ? info.confidence : 'low';
+      // Surface confidence at a glance, not just in the fine print below: a colour on the
+      // section's own left border, and a matching dot right next to the "AI" badge at the top.
+      box.classList.add(`conf-${conf}`);
+      title.appendChild(adEl('span', `ad-conf-dot ${conf}`));
       const foot = adEl('div', 'ad-fine');
       const confBadge = adEl('span', `ad-conf ${conf}`, `${conf} confidence`);
       foot.appendChild(confBadge);
       foot.appendChild(document.createTextNode(' · AI-generated by Gemini, so double-check anything important.'));
       box.appendChild(foot);
+    }
+
+    // --- Daily AI summary panel -------------------------------------------------------------
+    // Same POST /api/aircraft-info style backend contract as the per-aircraft profile above,
+    // but hitting /api/daily-summary with today's aggregate sightings log (see
+    // recordDailyLogEntries) instead of one aircraft's identity. Cached client-side per local
+    // day too, so re-opening the panel later the same day doesn't re-request anything.
+    const DAILY_SUMMARY_PATH_CLIENT = '/api/daily-summary';
+    const DAILY_SUMMARY_CACHE_PREFIX = 'radarDailySummary:';
+    const DAILY_SUMMARY_TIMEOUT_MS = 25000;
+    let dailySummaryLoading = false;
+
+    function loadCachedDailySummary() {
+      try {
+        const raw = localStorage.getItem(DAILY_SUMMARY_CACHE_PREFIX + todayLocalKey());
+        return raw ? JSON.parse(raw) : null;
+      } catch { return null; }
+    }
+    function saveCachedDailySummary(summary) {
+      try { localStorage.setItem(DAILY_SUMMARY_CACHE_PREFIX + todayLocalKey(), JSON.stringify(summary)); } catch { /* ignore */ }
+    }
+
+    function openDailySummaryPanel() {
+      const panel = document.getElementById('daily-summary-panel');
+      if (!panel) return;
+      panel.classList.remove('hidden');
+      renderDailySummaryPanel();
+    }
+    function closeDailySummaryPanel() {
+      const panel = document.getElementById('daily-summary-panel');
+      if (panel) panel.classList.add('hidden');
+    }
+
+    function renderDailySummaryPanel(state) {
+      const panel = document.getElementById('daily-summary-panel');
+      if (!panel || panel.classList.contains('hidden')) return;
+      panel.textContent = '';
+
+      const head = adEl('div', 'ad-head');
+      const titles = adEl('div', 'ad-titles');
+      titles.appendChild(adEl('div', 'ad-callsign', "Today's AI Summary"));
+      titles.appendChild(adEl('div', 'ad-sub', todayLocalKey()));
+      const close = adEl('button', 'ad-close', '✕');
+      close.type = 'button';
+      close.setAttribute('aria-label', 'Close daily summary');
+      close.addEventListener('click', closeDailySummaryPanel);
+      head.appendChild(titles);
+      head.appendChild(close);
+      panel.appendChild(head);
+
+      const box = adEl('div', 'ad-section ad-profile');
+      panel.appendChild(box);
+      const title = adEl('div', 'ad-section-title');
+      title.appendChild(adEl('span', null, "Today's traffic"));
+      title.appendChild(adEl('span', 'ad-ai-badge', 'AI'));
+      box.appendChild(title);
+
+      if (dailySummaryLoading) {
+        const skel = adEl('div', 'ad-skeleton');
+        skel.appendChild(adEl('div', 'ad-skel-line w60'));
+        skel.appendChild(adEl('div', 'ad-skel-line w90'));
+        skel.appendChild(adEl('div', 'ad-skel-line w75'));
+        box.appendChild(skel);
+        box.appendChild(adEl('div', 'ad-dim', 'Asking Gemini…'));
+        return;
+      }
+
+      if (state && state.error) {
+        box.appendChild(adEl('div', 'ad-dim', state.error));
+        const retry = adEl('button', 'ad-retry', 'Try again');
+        retry.type = 'button';
+        retry.addEventListener('click', () => requestDailySummary(true));
+        box.appendChild(retry);
+        return;
+      }
+
+      const cached = loadCachedDailySummary();
+      if (!cached) {
+        box.appendChild(adEl('div', 'ad-dim', "Ask Gemini for a recap of today's notable (military/alert) traffic."));
+        const btn = adEl('button', 'ad-retry', 'Generate summary');
+        btn.type = 'button';
+        btn.addEventListener('click', () => requestDailySummary(false));
+        box.appendChild(btn);
+        return;
+      }
+
+      const summary = cached.summary || {};
+      if (summary.headline) box.appendChild(adEl('div', 'ad-type-name', summary.headline));
+      if (summary.summary) box.appendChild(adEl('p', 'ad-summary', summary.summary));
+      const highlights = Array.isArray(summary.highlights) ? summary.highlights.filter(Boolean) : [];
+      if (highlights.length) {
+        const list = adEl('ul', 'ad-facts');
+        highlights.forEach((h) => list.appendChild(adEl('li', null, h)));
+        box.appendChild(list);
+      }
+
+      const refresh = adEl('button', 'ad-retry', 'Refresh');
+      refresh.type = 'button';
+      refresh.title = 'Re-ask Gemini (uses today\'s latest log)';
+      refresh.addEventListener('click', () => requestDailySummary(true));
+      box.appendChild(refresh);
+
+      const foot = adEl('div', 'ad-fine', cached.cached === false ? 'AI-generated by Gemini, so double-check anything important.' : 'Cached earlier today · AI-generated by Gemini.');
+      box.appendChild(foot);
+    }
+
+    async function requestDailySummary(force) {
+      if (dailySummaryLoading) return;
+      dailySummaryLoading = true;
+      renderDailySummaryPanel();
+      const entries = loadDailyLog();
+      try {
+        const res = await fetchWithTimeout(`${WORKER_URL}${DAILY_SUMMARY_PATH_CLIENT}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ entries, force: !!force }),
+        }, DAILY_SUMMARY_TIMEOUT_MS);
+        let data = null;
+        try { data = await res.json(); } catch { /* non-JSON error page etc */ }
+        dailySummaryLoading = false;
+        if (res.ok && data && data.ok === true) {
+          saveCachedDailySummary({ summary: data.summary, cached: data.cached });
+          renderDailySummaryPanel();
+        } else {
+          const messages = {
+            not_configured: "Daily summaries aren't set up on this server yet.",
+            rate_limited: 'Too many requests just now - wait a minute and try again.',
+            ai_busy: 'Gemini is busy right now. Try again shortly.',
+            ai_timeout: 'Gemini took too long to answer.',
+            daily_limit: 'The daily AI limit has been reached. Try again tomorrow.',
+          };
+          renderDailySummaryPanel({ error: messages[data && data.error] || "Couldn't get a summary right now." });
+        }
+      } catch (err) {
+        dailySummaryLoading = false;
+        const timedOut = err && err.name === 'AbortError';
+        renderDailySummaryPanel({ error: timedOut ? 'Gemini took too long to answer.' : "Couldn't reach the radar server." });
+      }
     }
 
     const radarContainerEl = document.getElementById('radarContainer');
@@ -3145,6 +3377,14 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     const postcodeChangeBtn = document.getElementById('postcode-change-btn');
     if (postcodeChangeBtn) {
       postcodeChangeBtn.addEventListener('click', () => showPostcodeOverlay(getCookie(POSTCODE_COOKIE) || '', true));
+    }
+    const dailySummaryBtn = document.getElementById('daily-summary-btn');
+    if (dailySummaryBtn) dailySummaryBtn.addEventListener('click', openDailySummaryPanel);
+    const dailySummaryPanelEl = document.getElementById('daily-summary-panel');
+    if (dailySummaryPanelEl) {
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !dailySummaryPanelEl.classList.contains('hidden')) closeDailySummaryPanel();
+      });
     }
 
     // Unattended kiosk: the Pi's launcher (deploy/kiosk.sh) opens the page with ?autostart=1 so
