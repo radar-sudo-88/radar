@@ -93,6 +93,9 @@ function serveStatic(req, res, pathname) {
     return;
   }
 
+  // Clean URLs: /about serves about.html (GitHub Pages does this natively; this matches it).
+  if (!path.extname(filePath) && fs.existsSync(`${filePath}.html`)) filePath += '.html';
+
   fs.readFile(filePath, (err, data) => {
     if (err) {
       // Unknown path - serve 404.html if present, else a plain 404.

@@ -185,6 +185,25 @@
       border-color: var(--accent-military);
     }
 
+    /* About-page link: same look as the location button, sitting just to its left. */
+    #about-link {
+      position: fixed;
+      top: 0.6rem;
+      right: 3.2rem;
+      z-index: 10002;
+      background: rgba(3, 7, 4, 0.75);
+      border: 1px solid var(--accent-amber-dim);
+      color: var(--accent-military);
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0.4rem 0.5rem;
+      border-radius: 50%;
+      text-decoration: none;
+    }
+    #about-link:hover {
+      border-color: var(--accent-military);
+    }
+
     .pulse-dot {
       width: 8px;
       height: 8px;

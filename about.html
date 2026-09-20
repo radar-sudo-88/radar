@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>About Aero Sentry</title>
+  <meta name="description" content="Aero Sentry is a live ADS-B radar dashboard for military and civilian airspace across the United Kingdom.">
+  <meta name="theme-color" content="#030704">
+
+  <!-- Relative hrefs so these work whether the page is served from a site root or a subpath. -->
+  <link rel="icon" href="favicon.ico" sizes="32x32">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <style>
+    /* Same palette as the radar (see styles.css) - kept inline so this page scrolls normally;
+       styles.css locks the body to one non-scrolling screen for the wall board. */
+    :root {
+      --bg-color: #030704;
+      --card-bg: rgba(5, 15, 9, 0.95);
+      --card-border: #0f381f;
+      --text-main: #00ff66;
+      --text-body: #b8f5cf;
+      --text-dim: #2b7a4b;
+      --accent-green: #00ff66;
+      --accent-blue: #00bfff;
+      --accent-military: #ffb000;
+      --accent-red: #ff3333;
+      --accent-amber-dim: #7a5a00;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { font-size: 16px; scroll-behavior: smooth; }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-body);
+      font-family: system-ui, -apple-system, sans-serif;
+      line-height: 1.6;
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    }
+
+    .wrap {
+      max-width: 46rem;
+      margin: 0 auto;
+      padding: 1.25rem 1.1rem 3rem;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 0.85rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent-green);
+      text-shadow: 0 0 10px rgba(0, 255, 102, 0.5);
+    }
+
+    .pulse-dot {
+      width: 9px;
+      height: 9px;
+      background-color: var(--accent-green);
+      border-radius: 50%;
+      box-shadow: 0 0 10px var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 15px var(--accent-green); }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+
+    .back {
+      color: var(--accent-military);
+      text-decoration: none;
+      font-size: 0.8rem;
+      border: 1px solid var(--accent-amber-dim);
+      background: rgba(3, 7, 4, 0.75);
+      padding: 0.4rem 0.8rem;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .back:hover, .back:focus-visible { border-color: var(--accent-military); outline: none; }
+
+    h1 {
+      font-size: clamp(1.6rem, 5vw, 2.2rem);
+      line-height: 1.2;
+      color: var(--accent-green);
+      text-shadow: 0 0 14px rgba(0, 255, 102, 0.35);
+      margin-bottom: 0.9rem;
+    }
+
+    h2 {
+      font-size: 0.8rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent-green);
+      margin-bottom: 0.8rem;
+    }
+
+    p + p { margin-top: 0.8rem; }
+
+    strong { color: var(--text-main); font-weight: 600; }
+
+    section { margin-top: 2.2rem; }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 1rem 1.1rem;
+    }
+
+    .lead { font-size: 1.05rem; }
+
+    /* Numbered steps */
+    ol.steps { list-style: none; counter-reset: step; display: grid; gap: 0.7rem; }
+    ol.steps > li {
+      counter-increment: step;
+      position: relative;
+      padding-left: 2.6rem;
+    }
+    ol.steps > li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 0.05rem;
+      width: 1.8rem;
+      height: 1.8rem;
+      border: 1px solid var(--accent-green);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 0.85rem;
+      color: var(--accent-green);
+      box-shadow: 0 0 8px rgba(0, 255, 102, 0.25);
+    }
+
+    /* The two proximity tiers */
+    .tiers { display: grid; gap: 0.8rem; margin-top: 1rem; }
+    @media (min-width: 40rem) { .tiers { grid-template-columns: 1fr 1fr; } }
+    .tier { border-left: 3px solid var(--accent-military); }
+    .tier .range {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--accent-military);
+      line-height: 1.1;
+    }
+    .tier .range small { font-size: 0.8rem; font-weight: 500; letter-spacing: 0.05em; }
+    .tier h3 { font-size: 0.85rem; margin: 0.3rem 0 0.5rem; color: var(--text-main); }
+    .tier p { font-size: 0.92rem; }
+
+    /* Other alert types */
+    .alerts { list-style: none; display: grid; gap: 0.7rem; margin-top: 1rem; }
+    .alerts li { padding-left: 1.1rem; position: relative; }
+    .alerts li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.55em;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-red);
+      box-shadow: 0 0 8px var(--accent-red);
+    }
+
+    /* Data points */
+    dl.data { display: grid; gap: 0.7rem; }
+    dl.data > div { border-left: 3px solid var(--accent-blue); padding-left: 0.9rem; }
+    dt {
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent-blue);
+    }
+
+    footer { margin-top: 2.5rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="topbar">
+      <div class="brand"><span class="pulse-dot"></span> Aero Sentry</div>
+      <a class="back" href="./">&larr; Back to radar</a>
+    </div>
+
+    <header>
+      <h1>Welcome to Aero Sentry</h1>
+      <p class="lead">
+        Aero Sentry is an interactive, real-time aviation tracking platform designed specifically to
+        monitor <strong>military and civilian airspace across the United Kingdom</strong>. Operating as a
+        live digital radar dashboard, it uses Automatic Dependent Surveillance-Broadcast (ADS-B) telemetry
+        to give aviation enthusiasts, plane spotters and local residents total situational awareness of the
+        skies above them.
+      </p>
+    </header>
+
+    <section id="how-it-works">
+      <h2>How it works</h2>
+      <p style="margin-bottom: 1rem;">
+        The platform simplifies complex transponder telemetry into a live, interactive map dashboard
+        in three main steps:
+      </p>
+      <ol class="steps">
+        <li>
+          <strong>Signal capture.</strong> Aero Sentry continuously scans the skies, capturing live data
+          transmitted directly from civilian and military aircraft.
+        </li>
+        <li>
+          <strong>Localised anchor.</strong> Enter any UK postcode to instantly centre the radar scope on
+          your exact geographic area and see exactly what is flying overhead.
+        </li>
+        <li>
+          <strong>Two-tier proximity alerts.</strong> You don't need to stare at the screen to catch the
+          action. A built-in smart audio engine broadcasts live military movement based on how close it is.
+        </li>
+      </ol>
+    </section>
+
+    <section id="alerts">
+      <h2>Proximity alerts</h2>
+      <div class="tiers">
+        <div class="card tier">
+          <div class="range">35 <small>NM</small></div>
+          <h3>The perimeter &mdash; screen ping</h3>
+          <p>
+            When an active military transponder is detected within a 35 nautical mile radius, the
+            platform issues an audible ping to announce its entry into your tracking zone.
+          </p>
+        </div>
+        <div class="card tier">
+          <div class="range">5 <small>NM</small></div>
+          <h3>Close range &mdash; voice callouts</h3>
+          <p>
+            When a military aircraft gets within the close-range 5 NM boundary, the system upgrades to
+            automated voice callouts, verbally broadcasting its current heading, altitude, speed and
+            approach direction.
+          </p>
+        </div>
+      </div>
+
+      <ul class="alerts">
+        <li>
+          <strong>Aviation emergency alerts.</strong> Real-time audio callouts for all major squawk codes.
+        </li>
+        <li>
+          <strong>Military intercepts.</strong> Integrated audio tracking notifications for QRA fighter
+          deployments.
+        </li>
+      </ul>
+    </section>
+
+    <section id="dashboard">
+      <h2>Dashboard features &amp; data points</h2>
+      <p style="margin-bottom: 1rem;">
+        The live tracking board isolates active transponders to decode and display critical flight
+        kinematics in real time:
+      </p>
+      <dl class="data">
+        <div>
+          <dt>Identity &amp; route</dt>
+          <dd>Aircraft type, registration, departure point and destination.</dd>
+        </div>
+        <div>
+          <dt>Positioning metrics</dt>
+          <dd>Exact range (in NM), altitude (in feet), bearing and heading degrees.</dd>
+        </div>
+        <div>
+          <dt>Motion metrics</dt>
+          <dd>Speed (in knots), vertical speed rate (V/S), total flight time and Estimated Time of
+            Arrival (ETA).</dd>
+        </div>
+      </dl>
+    </section>
+
+    <footer>
+      <a class="back" href="./">&larr; Back to radar</a>
+    </footer>
+  </div>
+
+  <script>
+    // The radar also runs as an unattended wall display. If someone taps through to this page there
+    // and walks away, send the screen back to the radar after 5 idle minutes rather than leaving it here.
+    (function () {
+      var IDLE_MS = 5 * 60 * 1000;
+      var timer;
+      function arm() {
+        clearTimeout(timer);
+        timer = setTimeout(function () { location.href = './'; }, IDLE_MS);
+      }
+      ['pointerdown', 'pointermove', 'keydown', 'scroll', 'touchstart', 'wheel'].forEach(function (ev) {
+        window.addEventListener(ev, arm, { passive: true });
+      });
+      arm();
+    })();
+  </script>
+</body>
+</html>
