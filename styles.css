@@ -169,6 +169,20 @@
       opacity: 0.5;
       cursor: default;
     }
+    #postcode-cancel {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-family: inherit;
+      font-size: 0.85rem;
+      text-decoration: underline;
+      padding: 0.6rem 1.2rem;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    #postcode-cancel:hover { color: var(--text-main); }
+    #postcode-cancel[hidden] { display: none; }
+
     #postcode-error {
       display: none;
       color: var(--accent-red);

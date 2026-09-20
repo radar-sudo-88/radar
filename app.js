@@ -177,11 +177,24 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (!overlay) return;
       if (input) input.value = prefill || '';
       if (err) err.style.display = 'none';
+      // Cancel is offered whenever a location is already set (the 📍 button); on a genuine first
+      // visit the prompt is mandatory, so no way out - hiding it there would leave a dead screen.
+      const cancelBtn = document.getElementById('postcode-cancel');
+      if (cancelBtn) cancelBtn.hidden = needsPostcodePrompt;
       overlay.classList.remove('hidden');
-      if (input && focusInput) input.focus();
+      if (input && focusInput) {
+        input.focus();
+        // The current postcode is prefilled - select it so typing a new one REPLACES it. On a phone
+        // there's no easy select-all, and without this the new postcode got appended to the old one
+        // ("NG1 1AANG7 2RD") and was rejected as "not a postcode".
+        input.select();
+        try { input.setSelectionRange(0, input.value.length); } catch (e) {}
+      }
     }
     function hidePostcodeOverlay() {
       const overlay = document.getElementById('postcode-overlay');
+      const input = document.getElementById('postcode-input');
+      if (input) input.blur(); // drops the phone keyboard
       if (overlay) overlay.classList.add('hidden');
     }
 
@@ -613,6 +626,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // triggers the UFO easter egg - see triggerUfoSighting().
     let ufoTypedBuffer = '';
     document.addEventListener('keydown', (e) => {
+      // These are debug shortcuts for a desktop keyboard - never fire them while typing into a
+      // field, or entering a postcode with a 5, 6, 7, 9 or 0 in it sets off fake alerts.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (!feedStarted) return;
       if (e.key === '5') triggerTestSquawk('7500');
       else if (e.key === '6') triggerTestSquawk('7600');
@@ -2628,6 +2645,12 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // the corner "change location" button, both any time after that too.
     const postcodeForm = document.getElementById('postcode-form');
     if (postcodeForm) postcodeForm.addEventListener('submit', handlePostcodeSubmit);
+    const postcodeCancelBtn = document.getElementById('postcode-cancel');
+    if (postcodeCancelBtn) postcodeCancelBtn.addEventListener('click', hidePostcodeOverlay);
+    document.addEventListener('keydown', (e) => {
+      const overlay = document.getElementById('postcode-overlay');
+      if (e.key === 'Escape' && overlay && !overlay.classList.contains('hidden') && !needsPostcodePrompt) hidePostcodeOverlay();
+    });
     const postcodeChangeBtn = document.getElementById('postcode-change-btn');
     if (postcodeChangeBtn) {
       postcodeChangeBtn.addEventListener('click', () => showPostcodeOverlay(getCookie(POSTCODE_COOKIE) || '', true));
