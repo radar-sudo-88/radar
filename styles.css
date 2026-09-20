@@ -830,3 +830,175 @@
         min-width: 80px;
       }
     }
+
+    /* ------------------------------------------------------------------
+       Aircraft detail panel (tap an aircraft on the scope). Built by app.js.
+       ------------------------------------------------------------------ */
+    .aircraft-detail {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 5; /* above the canvas (2) and legend (3); inside .radar-wrapper */
+      width: min(21rem, calc(100% - 16px));
+      max-height: calc(100% - 16px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      touch-action: pan-y; /* the scope and body are touch-action:none; this lets the panel scroll */
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      box-shadow: 0 0 18px rgba(0, 0, 0, 0.85), inset 0 0 20px rgba(0, 255, 102, 0.06);
+      padding: 0.5rem 0.6rem;
+      font-size: 0.72rem;
+      line-height: 1.35;
+      color: var(--text-main);
+      scrollbar-width: thin;
+      scrollbar-color: var(--card-border) transparent;
+    }
+    .aircraft-detail.hidden { display: none; }
+    .aircraft-detail[data-side="left"] { left: 8px; right: auto; }
+    .aircraft-detail[data-side="right"] { right: 8px; left: auto; }
+
+    .ad-head { display: flex; align-items: flex-start; gap: 0.4rem; margin-bottom: 0.35rem; }
+    .ad-titles { flex: 1; min-width: 0; }
+    .ad-callsign {
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: var(--accent-green);
+      text-shadow: 0 0 8px rgba(0, 255, 102, 0.4);
+      overflow-wrap: anywhere;
+    }
+    .ad-callsign.alert { color: var(--accent-red); text-shadow: 0 0 8px rgba(255, 51, 51, 0.5); }
+    .ad-sub { font-size: 0.65rem; color: var(--text-dim); overflow-wrap: anywhere; }
+    .ad-close {
+      flex: 0 0 auto;
+      min-width: 1.9rem;
+      min-height: 1.9rem; /* comfortable tap target */
+      background: rgba(10, 30, 18, 0.8);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text-main);
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .ad-close:hover { border-color: var(--text-main); }
+
+    .ad-photo {
+      height: 7.5rem;
+      margin-bottom: 0.4rem;
+      background: rgba(2, 8, 4, 0.95);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .ad-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    .ad-lost {
+      margin-bottom: 0.4rem;
+      padding: 0.25rem 0.4rem;
+      border: 1px solid var(--accent-amber-dim);
+      border-radius: 4px;
+      color: var(--accent-military);
+      font-size: 0.65rem;
+    }
+
+    .ad-live, .ad-specs { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem; }
+    .ad-stat {
+      background: rgba(10, 30, 18, 0.8);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      padding: 0.25rem 0.4rem;
+      min-width: 0;
+    }
+    .ad-stat-label { font-size: 0.55rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+    .ad-stat-value { font-size: 0.75rem; font-weight: 600; overflow-wrap: anywhere; }
+    .ad-stat-value.up { color: var(--accent-green); }
+    .ad-stat-value.down, .ad-stat-value.alert { color: var(--accent-red); }
+
+    .ad-section { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--card-border); }
+    .ad-section-title {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-bottom: 0.3rem;
+      font-size: 0.6rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent-military);
+    }
+    .ad-ai-badge {
+      padding: 0 0.3rem;
+      border: 1px solid var(--accent-blue);
+      border-radius: 3px;
+      color: var(--accent-blue);
+      font-size: 0.55rem;
+      letter-spacing: 0.08em;
+    }
+    .ad-route-row { display: flex; gap: 0.4rem; margin-bottom: 0.15rem; }
+    .ad-route-label { flex: 0 0 3.4rem; color: var(--text-dim); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .ad-route-value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+    .ad-type-name { font-size: 0.9rem; font-weight: 700; color: var(--text-main); overflow-wrap: anywhere; }
+    .ad-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.25rem 0; }
+    .ad-chip {
+      padding: 0 0.4rem;
+      border: 1px solid var(--card-border);
+      border-radius: 999px;
+      font-size: 0.6rem;
+      color: var(--text-dim);
+    }
+    .ad-summary { margin: 0.3rem 0; color: var(--text-main); opacity: 0.92; }
+    .ad-specs { margin: 0.35rem 0; }
+    .ad-facts { margin: 0.3rem 0 0.2rem 1rem; color: var(--text-main); opacity: 0.9; }
+    .ad-facts li { margin-bottom: 0.15rem; }
+    .ad-dim { color: var(--text-dim); font-size: 0.68rem; }
+    .ad-fine { margin-top: 0.3rem; color: var(--text-dim); font-size: 0.58rem; }
+    .ad-conf { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+    .ad-conf.high { color: var(--accent-green); }
+    .ad-conf.medium { color: var(--accent-military); }
+    .ad-conf.low { color: var(--accent-red); }
+
+    .ad-retry {
+      margin-top: 0.35rem;
+      padding: 0.35rem 0.7rem;
+      min-height: 2rem;
+      background: rgba(10, 30, 18, 0.8);
+      border: 1px solid var(--text-dim);
+      border-radius: 6px;
+      color: var(--text-main);
+      font-size: 0.7rem;
+      cursor: pointer;
+    }
+    .ad-retry:hover { border-color: var(--text-main); }
+
+    .ad-skeleton { margin: 0.2rem 0 0.35rem; }
+    .ad-skel-line {
+      height: 0.55rem;
+      margin-bottom: 0.3rem;
+      border-radius: 3px;
+      background: linear-gradient(90deg, rgba(15, 56, 31, 0.5) 25%, rgba(43, 122, 75, 0.55) 50%, rgba(15, 56, 31, 0.5) 75%);
+      background-size: 200% 100%;
+      animation: ad-shimmer 1.4s linear infinite;
+    }
+    .ad-skel-line.w60 { width: 60%; }
+    .ad-skel-line.w75 { width: 75%; }
+    .ad-skel-line.w90 { width: 90%; }
+    @keyframes ad-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+    @media (prefers-reduced-motion: reduce) { .ad-skel-line { animation: none; } }
+
+    /* Portrait phones/tablets: the scope is a short row above the sidebar, so dock the panel
+       across the top or bottom of it (whichever is away from the tapped aircraft - see
+       buildAircraftDetailPanel) and cap its height so the scope stays visible. */
+    @media (max-width: 1100px) and (orientation: portrait) {
+      .aircraft-detail { left: 8px; right: 8px; width: auto; max-height: 58%; }
+      .aircraft-detail[data-side="top"] { top: 8px; bottom: auto; }
+      .aircraft-detail[data-side="bottom"] { bottom: 8px; top: auto; }
+      .ad-photo { height: 5.5rem; }
+    }
+    /* Short landscape phones: narrower panel, no photo. */
+    @media (max-height: 500px) and (orientation: landscape) {
+      .aircraft-detail { width: min(17rem, calc(100% - 16px)); }
+      .ad-photo { display: none; }
+    }
