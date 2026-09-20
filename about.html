@@ -204,6 +204,29 @@
       box-shadow: 0 0 8px var(--accent-blue);
     }
 
+    /* Aircraft spec sub-groups (inside the capabilities section) */
+    .subgroup { margin-top: 1.1rem; }
+    .subgroup h3 {
+      font-size: 0.85rem;
+      color: var(--text-main);
+      margin-bottom: 0.6rem;
+    }
+
+    /* Platform advantages */
+    ul.advantages { list-style: none; display: grid; gap: 0.7rem; margin-top: 1rem; }
+    ul.advantages li { padding-left: 1.1rem; position: relative; }
+    ul.advantages li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.55em;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green);
+    }
+
     /* Install button */
     .btn {
       font: inherit;
@@ -339,6 +362,62 @@
             Arrival (ETA).</dd>
         </div>
       </dl>
+    </section>
+
+    <section id="capabilities">
+      <h2>Key capabilities, delivered instantly</h2>
+      <p style="margin-bottom: 1rem;">
+        Selecting an active aircraft on the scope populates a high-visibility dashboard tracking live
+        operational metrics relative to your station.
+      </p>
+      <dl class="data">
+        <div>
+          <dt>Identification &amp; imagery</dt>
+          <dd>The aircraft's unique registration, type, ICAO code and a high-resolution photograph.</dd>
+        </div>
+        <div>
+          <dt>Proximity metrics</dt>
+          <dd>Exact distance (NM) and bearing from your tracking station.</dd>
+        </div>
+        <div>
+          <dt>Live kinematics</dt>
+          <dd>Altitude, speed (knots/mph), heading, vertical speed and active squawk codes.</dd>
+        </div>
+      </dl>
+
+      <div class="subgroup">
+        <h3>Integrated technical &amp; historical specifications</h3>
+        <p style="margin-bottom: 1rem;">
+          A single toggle pulls a deep-dive specification card for the selected airframe:
+        </p>
+        <dl class="data">
+          <div>
+            <dt>Asset overview</dt>
+            <dd>Classification, primary operators and historical significance.</dd>
+          </div>
+          <div>
+            <dt>Engineering specs</dt>
+            <dd>Engine configuration, powerplant types and maximum passenger/crew capacity.</dd>
+          </div>
+          <div>
+            <dt>Performance capabilities</dt>
+            <dd>Cruise speed, maximum service ceiling and operational range.</dd>
+          </div>
+          <div>
+            <dt>Curated insights</dt>
+            <dd>Design innovations, production history and notable milestones.</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <section id="advantages">
+      <h2>Aero Sentry platform advantages</h2>
+      <ul class="advantages">
+        <li><strong>Data and context.</strong> Combines live ADS-B telemetry with structural and historical archives.</li>
+        <li><strong>Visual awareness.</strong> Couples map icons with real-world imagery and technical context.</li>
+        <li><strong>Premium tactical UI.</strong> A high-contrast dark aesthetic optimised for data legibility on desktop and mobile screens.</li>
+      </ul>
     </section>
 
     <section id="weather">
