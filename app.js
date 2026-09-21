@@ -35,7 +35,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     const SETTINGS_KEY = 'radarSettings';
     const SETTINGS_DEFAULTS = {
       speed: 'kts', alt: 'ft', dist: 'nm', theme: 'green',
-      rareAlerts: true, atcLinks: true, shareLocation: true
+      rareAlerts: true, shareLocation: true
     };
     const SPEED_UNITS = {
       kts: { label: 'kts', perKt: 1, spoken: 'knots' },
@@ -69,7 +69,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (has(ALT_UNITS, raw.alt)) out.alt = raw.alt;
       if (has(DIST_UNITS, raw.dist)) out.dist = raw.dist;
       if (has(THEMES, raw.theme)) out.theme = raw.theme;
-      ['rareAlerts', 'atcLinks', 'shareLocation'].forEach((k) => {
+      ['rareAlerts', 'shareLocation'].forEach((k) => {
         if (typeof raw[k] === 'boolean') out[k] = raw[k];
       });
       return out;
@@ -86,7 +86,6 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (q.get('dst')) o.dist = q.get('dst');
       if (q.get('theme')) o.theme = q.get('theme');
       if (q.has('rare')) o.rareAlerts = q.get('rare') !== '0';
-      if (q.has('atc')) o.atcLinks = q.get('atc') !== '0';
       return o;
     }
     const settings = sanitizeSettings(Object.assign({}, readStoredSettings(), readUrlSettings()));
@@ -3105,65 +3104,6 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     window.triggerTestRare = triggerTestRare;
 
     // ---------------------------------------------------------------------
-    // Live ATC audio link
-    // ---------------------------------------------------------------------
-    // The airfield nearest the selected aircraft, linked to LiveATC's search for that ICAO code.
-    // LiveATC only covers some airfields, so the link can land on "no feeds found" - the tooltip
-    // says so. Off entirely when the "ATC audio links" setting is off.
-    const ATC_MAX_DISTANCE_NM = 60;
-    const ATC_AIRFIELDS = [
-      ['EGLL', 'London Heathrow', 51.4700, -0.4543], ['EGKK', 'London Gatwick', 51.1481, -0.1903],
-      ['EGGW', 'London Luton', 51.8747, -0.3683], ['EGSS', 'London Stansted', 51.8860, 0.2389],
-      ['EGLC', 'London City', 51.5053, 0.0553], ['EGWU', 'RAF Northolt', 51.5530, -0.4182],
-      ['EGKB', 'Biggin Hill', 51.3308, 0.0325], ['EGMC', 'Southend', 51.5714, 0.6956],
-      ['EGLF', 'Farnborough', 51.2758, -0.7763], ['EGHI', 'Southampton', 50.9503, -1.3568],
-      ['EGHH', 'Bournemouth', 50.7800, -1.8425], ['EGKA', 'Shoreham', 50.8356, -0.2972],
-      ['EGGD', 'Bristol', 51.3827, -2.7191], ['EGFF', 'Cardiff', 51.3967, -3.3433],
-      ['EGTE', 'Exeter', 50.7344, -3.4139], ['EGHQ', 'Newquay', 50.4406, -4.9954],
-      ['EGBB', 'Birmingham', 52.4539, -1.7480], ['EGNX', 'East Midlands', 52.8311, -1.3281],
-      ['EGBE', 'Coventry', 52.3697, -1.4797], ['EGBN', 'Nottingham', 52.9200, -1.0792],
-      ['EGBG', 'Leicester', 52.6078, -1.0319], ['EGSC', 'Cambridge', 52.2050, 0.1750],
-      ['EGSH', 'Norwich', 52.6758, 1.2828], ['EGTK', 'Oxford', 51.8369, -1.3200],
-      ['EGBJ', 'Gloucestershire', 51.8942, -2.1672], ['EGCC', 'Manchester', 53.3537, -2.2750],
-      ['EGGP', 'Liverpool John Lennon', 53.3336, -2.8497], ['EGNM', 'Leeds Bradford', 53.8659, -1.6606],
-      ['EGNH', 'Blackpool', 53.7717, -3.0286], ['EGNJ', 'Humberside', 53.5744, -0.3508],
-      ['EGNR', 'Hawarden', 53.1781, -2.9778], ['EGNT', 'Newcastle', 55.0375, -1.6917],
-      ['EGNV', 'Teesside', 54.5092, -1.4294], ['EGNS', 'Isle of Man', 54.0833, -4.6239],
-      ['EGPH', 'Edinburgh', 55.9500, -3.3725], ['EGPF', 'Glasgow', 55.8642, -4.4328],
-      ['EGPK', 'Prestwick', 55.5094, -4.5867], ['EGPD', 'Aberdeen', 57.2019, -2.1978],
-      ['EGPE', 'Inverness', 57.5425, -4.0475], ['EGAA', 'Belfast International', 54.6575, -6.2158],
-      ['EGAC', 'Belfast City', 54.6181, -5.8725], ['EIDW', 'Dublin', 53.4213, -6.2701],
-      ['EGJJ', 'Jersey', 49.2079, -2.1955], ['EGJB', 'Guernsey', 49.4350, -2.6019],
-      ['EGVN', 'RAF Brize Norton', 51.7500, -1.5836], ['EGVA', 'RAF Fairford', 51.6822, -1.7900],
-      ['EGUN', 'RAF Mildenhall', 52.3617, 0.4864], ['EGUL', 'RAF Lakenheath', 52.4093, 0.5610],
-      ['EGXC', 'RAF Coningsby', 53.0929, -0.1650], ['EGXW', 'RAF Waddington', 53.1662, -0.5238],
-      ['EGYD', 'RAF Cranwell', 53.0303, -0.4832], ['EGXE', 'RAF Leeming', 54.2919, -1.5354],
-      ['EGXT', 'RAF Wittering', 52.6126, -0.4764], ['EGYM', 'RAF Marham', 52.6484, 0.5506],
-      ['EGXH', 'RAF Honington', 52.3426, 0.7729], ['EGWC', 'RAF Cosford', 52.6383, -2.3056],
-      ['EGOS', 'RAF Shawbury', 52.7982, -2.6678], ['EGOV', 'RAF Valley', 53.2481, -4.5353],
-      ['EGQS', 'RAF Lossiemouth', 57.7052, -3.3392], ['EGVO', 'RAF Odiham', 51.2341, -0.9428],
-      ['EGDM', 'MoD Boscombe Down', 51.1522, -1.7475], ['EGDY', 'RNAS Yeovilton', 51.0094, -2.6389],
-      ['EGSU', 'Duxford', 52.0908, 0.1319]
-    ];
-
-    // -> { icao, name, distNM } for the closest airfield within ATC_MAX_DISTANCE_NM, else null.
-    // Military stations are skipped unless the aircraft is military: LiveATC has few of them, so a
-    // civil aircraft passing an RAF base is better pointed at the nearest civil airfield.
-    const ATC_MILITARY_NAME = /^(RAF|RNAS|MoD)\b/;
-    function nearestAtcAirfield(lat, lon, includeMilitary) {
-      let best = null;
-      for (const [icao, name, aLat, aLon] of ATC_AIRFIELDS) {
-        if (!includeMilitary && ATC_MILITARY_NAME.test(name)) continue;
-        const d = calcDistanceNM(lat, lon, aLat, aLon);
-        if (d <= ATC_MAX_DISTANCE_NM && (!best || d < best.distNM)) best = { icao, name, distNM: d };
-      }
-      return best;
-    }
-    function liveAtcUrl(icao) {
-      return `https://www.liveatc.net/search/?icao=${encodeURIComponent(icao)}`;
-    }
-
-    // ---------------------------------------------------------------------
     // Shareable links
     // ---------------------------------------------------------------------
     // Builds a link to this site that carries the current setup: location (?pc=, unless the
@@ -3181,7 +3121,6 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (settings.dist !== SETTINGS_DEFAULTS.dist) q.set('dst', settings.dist);
       if (settings.theme !== SETTINGS_DEFAULTS.theme) q.set('theme', settings.theme);
       if (settings.rareAlerts !== SETTINGS_DEFAULTS.rareAlerts) q.set('rare', settings.rareAlerts ? '1' : '0');
-      if (settings.atcLinks !== SETTINGS_DEFAULTS.atcLinks) q.set('atc', settings.atcLinks ? '1' : '0');
       if (opts.hex && /^[0-9a-f]{6}$/i.test(String(opts.hex))) q.set('ac', String(opts.hex).toLowerCase());
       let basePath = window.location.pathname;
       const radarIdx = basePath.toLowerCase().indexOf('/radar/');
@@ -3635,14 +3574,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const copyBtn = adEl('button', 'ad-btn', '🔗 Copy link');
       copyBtn.type = 'button';
       copyBtn.addEventListener('click', () => { resetAircraftDetailIdleTimer(); copySelectedAircraftLink(); });
-      const atcLink = adEl('a', 'ad-btn');
-      atcLink.id = 'ad-atc';
-      atcLink.target = '_blank';
-      atcLink.rel = 'noopener noreferrer';
-      atcLink.hidden = true;
       actions.appendChild(shareBtn);
       actions.appendChild(copyBtn);
-      actions.appendChild(atcLink);
       panel.appendChild(actions);
       const shareStatus = adEl('div', 'ad-fine');
       shareStatus.id = 'ad-share-status';
@@ -3710,24 +3643,6 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         const decodedTag = describeSquawk(ac.squawk);
         if (decodedTag && decodedTag.kind === 'notable') tagsEl.appendChild(adEl('span', 'ad-tag', `${ac.squawk} · ${decodedTag.short}`));
         tagsEl.hidden = !tagsEl.childNodes.length;
-      }
-
-      const atcEl = document.getElementById('ad-atc');
-      if (atcEl) {
-        const airfield = (settings.atcLinks && Number.isFinite(ac.lat) && Number.isFinite(ac.lon))
-          ? nearestAtcAirfield(ac.lat, ac.lon, isMilitary(ac)) : null;
-        atcEl.hidden = !airfield;
-        if (airfield) {
-          atcEl.href = liveAtcUrl(airfield.icao);
-          atcEl.textContent = `📻 ATC audio · ${airfield.icao}`;
-          atcEl.title = `Listen near ${airfield.name} (${fmtDist(airfield.distNM, 0)} from this aircraft) on LiveATC. Not every airfield has a feed.`;
-        }
-      }
-
-      const lostEl = document.getElementById('ad-lost');
-      if (lostEl) {
-        lostEl.hidden = !selectedLostSince;
-        if (selectedLostSince) lostEl.textContent = `Signal lost ${Math.round((Date.now() - selectedLostSince) / 1000)}s ago - showing last known data`;
       }
 
       const live = document.getElementById('ad-live');
