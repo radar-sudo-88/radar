@@ -9,6 +9,12 @@
       --accent-military: #ffb000;
       --accent-red: #ff3333;
       --accent-amber-dim: #7a5a00;
+      /* Theme plumbing - see THEMES / applyTheme() in app.js, which overrides these from the ⚙️ panel. */
+      --accent-rgb: 0, 255, 102;
+      --input-bg: #061a0d;
+      --tint-bg: rgba(10, 30, 18, 0.8);
+      --border-soft: rgba(15, 56, 31, 0.6);
+      --btn-bg: rgba(3, 7, 4, 0.75);
     }
 
     /* Fluid root size: stays at 16px up to ~1450px wide (phones, tablets, laptops unchanged),
@@ -84,7 +90,7 @@
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--accent-green);
-      text-shadow: 0 0 10px rgba(0,255,102,0.5);
+      text-shadow: 0 0 10px rgba(var(--accent-rgb), 0.5);
     }
     #start-overlay .start-sub {
       font-size: 0.75rem;
@@ -115,7 +121,7 @@
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--accent-green);
-      text-shadow: 0 0 10px rgba(0,255,102,0.5);
+      text-shadow: 0 0 10px rgba(var(--accent-rgb), 0.5);
     }
     #postcode-overlay .start-sub {
       font-size: 0.75rem;
@@ -127,7 +133,7 @@
       align-items: center;
     }
     #postcode-input {
-      background: #061a0d;
+      background: var(--input-bg);
       border: 1px solid var(--accent-green);
       color: var(--text-main);
       font-family: inherit;
@@ -147,7 +153,7 @@
     }
     #postcode-input:focus {
       outline: none;
-      box-shadow: 0 0 8px rgba(0,255,102,0.4);
+      box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.4);
     }
     #postcode-form button[type="submit"] {
       background: var(--accent-green);
@@ -196,7 +202,7 @@
       top: 0.6rem;
       right: 0.6rem;
       z-index: 10002; /* above the postcode overlay itself, so it's always reachable */
-      background: rgba(3, 7, 4, 0.75);
+      background: var(--btn-bg);
       border: 1px solid var(--accent-amber-dim);
       color: var(--accent-military);
       font-size: 1rem;
@@ -215,7 +221,7 @@
       top: 0.6rem;
       right: 3.2rem;
       z-index: 10002;
-      background: rgba(3, 7, 4, 0.75);
+      background: var(--btn-bg);
       border: 1px solid var(--accent-amber-dim);
       color: var(--accent-military);
       font-size: 1rem;
@@ -234,7 +240,7 @@
       top: 0.6rem;
       right: 5.8rem;
       z-index: 10002;
-      background: rgba(3, 7, 4, 0.75);
+      background: var(--btn-bg);
       border: 1px solid var(--accent-amber-dim);
       color: var(--accent-military);
       font-size: 1rem;
@@ -301,7 +307,7 @@
       height: 100%;
       width: 100%;
       touch-action: none;
-      box-shadow: inset 0 0 30px rgba(0, 255, 102, 0.15);
+      box-shadow: inset 0 0 30px rgba(var(--accent-rgb), 0.15);
     }
 
     #map {
@@ -392,7 +398,7 @@
     }
 
     .ac-card {
-      background: rgba(10, 30, 18, 0.8);
+      background: var(--tint-bg);
       border: 1px solid var(--card-border);
       padding: 0.35rem 0.45rem;
       border-radius: 6px;
@@ -499,7 +505,7 @@
       align-items: center;
       justify-content: center;
       padding: 0 0.4rem;
-      border-right: 1px solid rgba(15, 56, 31, 0.6);
+      border-right: 1px solid var(--border-soft);
     }
 
     .airline-logo-thumb img {
@@ -535,7 +541,7 @@
       text-align: center;
       text-transform: uppercase;
       padding: 4px;
-      text-shadow: 0 0 6px rgba(0, 255, 102, 0.5);
+      text-shadow: 0 0 6px rgba(var(--accent-rgb), 0.5);
     }
 
     .banner-col {
@@ -546,7 +552,7 @@
       flex-direction: column;
       justify-content: center;
       height: 100%;
-      border-right: 1px solid rgba(15, 56, 31, 0.6);
+      border-right: 1px solid var(--border-soft);
     }
 
     /* The flight-info column's content (callsign, type, from/to) rarely needs a full equal
@@ -576,7 +582,7 @@
       letter-spacing: 0.02em;
       line-height: 1.1;
       margin-bottom: 0.05rem;
-      text-shadow: 0 0 8px rgba(0, 255, 102, 0.4);
+      text-shadow: 0 0 8px rgba(var(--accent-rgb), 0.4);
     }
 
     .aircraft-meta {
@@ -647,7 +653,7 @@
       font-weight: 800;
       color: var(--accent-green);
       line-height: 1.1;
-      text-shadow: 0 0 8px rgba(0, 255, 102, 0.5);
+      text-shadow: 0 0 8px rgba(var(--accent-rgb), 0.5);
     }
 
     .secondary-metric {
@@ -877,7 +883,7 @@
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 8px;
-      box-shadow: 0 0 18px rgba(0, 0, 0, 0.85), inset 0 0 20px rgba(0, 255, 102, 0.06);
+      box-shadow: 0 0 18px rgba(0, 0, 0, 0.85), inset 0 0 20px rgba(var(--accent-rgb), 0.06);
       padding: 0.5rem 0.6rem;
       font-size: 0.72rem;
       line-height: 1.35;
@@ -896,7 +902,7 @@
       font-weight: 700;
       letter-spacing: 0.03em;
       color: var(--accent-green);
-      text-shadow: 0 0 8px rgba(0, 255, 102, 0.4);
+      text-shadow: 0 0 8px rgba(var(--accent-rgb), 0.4);
       overflow-wrap: anywhere;
     }
     .ad-callsign.alert { color: var(--accent-red); text-shadow: 0 0 8px rgba(255, 51, 51, 0.5); }
@@ -905,7 +911,7 @@
       flex: 0 0 auto;
       min-width: 1.9rem;
       min-height: 1.9rem; /* comfortable tap target */
-      background: rgba(10, 30, 18, 0.8);
+      background: var(--tint-bg);
       border: 1px solid var(--card-border);
       border-radius: 6px;
       color: var(--text-main);
@@ -935,7 +941,7 @@
 
     .ad-live, .ad-specs { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem; }
     .ad-stat {
-      background: rgba(10, 30, 18, 0.8);
+      background: var(--tint-bg);
       border: 1px solid var(--card-border);
       border-radius: 4px;
       padding: 0.25rem 0.4rem;
@@ -1017,7 +1023,7 @@
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }
-    .ad-conf.high { color: var(--accent-green); background: rgba(0, 255, 102, 0.08); }
+    .ad-conf.high { color: var(--accent-green); background: rgba(var(--accent-rgb), 0.08); }
     .ad-conf.medium { color: var(--accent-military); background: rgba(255, 176, 0, 0.08); }
     .ad-conf.low { color: var(--accent-red); background: rgba(255, 51, 51, 0.08); }
 
@@ -1025,7 +1031,7 @@
       margin-top: 0.35rem;
       padding: 0.35rem 0.7rem;
       min-height: 2rem;
-      background: rgba(10, 30, 18, 0.8);
+      background: var(--tint-bg);
       border: 1px solid var(--text-dim);
       border-radius: 6px;
       color: var(--text-main);
@@ -1063,3 +1069,168 @@
       .aircraft-detail { width: min(17rem, calc(100% - 16px)); }
       .ad-photo { display: none; }
     }
+
+
+    /* ------------------------------------------------------------------
+       Settings button + panel (⚙️), rare-aircraft banner, and the extra
+       controls in the aircraft detail panel (tags, share/copy/ATC row).
+       ------------------------------------------------------------------ */
+    /* Fourth corner button: same look as the other three, one more slot to the left. */
+    #settings-btn {
+      position: fixed;
+      top: 0.6rem;
+      right: 8.4rem;
+      z-index: 10002;
+      background: var(--btn-bg);
+      border: 1px solid var(--accent-amber-dim);
+      color: var(--accent-military);
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0.4rem 0.5rem;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    #settings-btn:hover { border-color: var(--accent-military); }
+
+    #settings-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10005;
+      background: rgba(0, 0, 0, 0.6);
+    }
+    #settings-backdrop[hidden], #settings-panel[hidden], #rare-banner[hidden] { display: none; }
+    #settings-panel {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10006; /* above the AI panels (10003) and the backdrop (10005) */
+      width: min(24rem, calc(100vw - 1.5rem));
+      max-height: calc(100vh - 1.5rem);
+      max-height: calc(100dvh - 1.5rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      touch-action: pan-y; /* body is touch-action:none; this lets the panel scroll */
+      background: var(--card-bg);
+      border: 1px solid var(--accent-green);
+      border-radius: 10px;
+      box-shadow: 0 0 24px rgba(0, 0, 0, 0.9), inset 0 0 24px rgba(var(--accent-rgb), 0.06);
+      padding: 0.7rem 0.8rem 0.8rem;
+      color: var(--text-main);
+      font-size: 0.8rem;
+      scrollbar-width: thin;
+      scrollbar-color: var(--card-border) transparent;
+    }
+    .st-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+    .st-title { flex: 1; font-size: 1rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+    .st-group { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--card-border); }
+    .st-group-title { font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 0.35rem; }
+    .st-row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
+    .st-label { width: 4.6rem; flex-shrink: 0; color: var(--text-dim); }
+    .st-seg { flex: 1; display: flex; gap: 0.3rem; }
+    .st-seg button {
+      flex: 1;
+      min-height: 2.3rem;
+      background: transparent;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text-dim);
+      font: inherit;
+      font-size: 0.78rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+    }
+    .st-seg button.active {
+      color: var(--accent-green);
+      border-color: var(--accent-green);
+      background: rgba(var(--accent-rgb), 0.12);
+    }
+    .st-themes button { flex-direction: column; gap: 0.2rem; padding: 0.3rem 0.1rem; font-size: 0.65rem; }
+    .st-swatch { width: 0.9rem; height: 0.9rem; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.35); }
+    .st-toggle { display: flex; align-items: center; gap: 0.7rem; padding: 0.4rem 0; cursor: pointer; }
+    .st-toggle span { flex: 1; min-width: 0; }
+    .st-toggle strong { display: block; font-weight: 600; }
+    .st-toggle small { display: block; color: var(--text-dim); font-size: 0.65rem; line-height: 1.3; margin-top: 0.1rem; }
+    .st-toggle input { width: 1.4rem; height: 1.4rem; flex-shrink: 0; accent-color: var(--accent-green); }
+    .st-actions { display: flex; gap: 0.5rem; margin-top: 0.7rem; }
+    .st-btn {
+      min-height: 2.5rem;
+      padding: 0.4rem 0.8rem;
+      background: transparent;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text-main);
+      font: inherit;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    .st-btn.primary { flex: 1; border-color: var(--accent-green); background: rgba(var(--accent-rgb), 0.1); }
+    .st-status { min-height: 1.1rem; margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); }
+
+    /* Rare-aircraft banner: sits under the corner buttons, tap to open that aircraft. */
+    #rare-banner {
+      position: fixed;
+      top: 3.6rem;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10004;
+      max-width: calc(100vw - 1.5rem);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      background: rgba(30, 20, 0, 0.94);
+      border: 1px solid var(--accent-military);
+      border-radius: 999px;
+      color: var(--accent-military);
+      font: inherit;
+      font-size: 0.8rem;
+      box-shadow: 0 0 16px rgba(255, 176, 0, 0.35);
+      cursor: pointer;
+      animation: rareBannerIn 0.35s ease-out;
+    }
+    #rare-banner .rb-star { font-size: 1rem; }
+    #rare-banner .rb-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @keyframes rareBannerIn {
+      from { opacity: 0; transform: translate(-50%, -0.6rem); }
+      to { opacity: 1; transform: translate(-50%, 0); }
+    }
+
+    /* Aircraft detail panel additions */
+    .ad-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
+    .ad-tags[hidden] { display: none; }
+    .ad-tag {
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 0.1rem 0.4rem;
+      border: 1px solid var(--accent-green);
+      border-radius: 999px;
+      color: var(--accent-green);
+    }
+    .ad-tag.rare { border-color: var(--accent-military); color: var(--accent-military); }
+    .ad-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.15rem 0 0.35rem; }
+    .ad-btn {
+      flex: 1 1 auto;
+      min-height: 2rem;
+      padding: 0.25rem 0.5rem;
+      background: transparent;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text-main);
+      font: inherit;
+      font-size: 0.68rem;
+      text-align: center;
+      text-decoration: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ad-btn:hover { border-color: var(--accent-green); }
+    .ad-btn[hidden] { display: none; }
+    .ad-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.62rem; line-height: 1.3; }

@@ -57,6 +57,81 @@
   <!-- Link to the About page (plain relative href so it works from a site root or a subpath) -->
   <a id="about-link" href="about.html" title="About Aero Sentry" aria-label="About Aero Sentry">ℹ️</a>
 
+  <!-- Settings: units, theme, feature toggles, and "copy a link to this setup". Wired up in
+       app.js (initSettingsPanel). -->
+  <button id="settings-btn" type="button" title="Settings" aria-label="Settings" aria-haspopup="dialog">⚙️</button>
+
+  <!-- Banner shown alongside the chime when a rare aircraft comes into range (checkRareAircraft
+       in app.js). Tap it to open that aircraft's details. -->
+  <button id="rare-banner" type="button" hidden></button>
+
+  <div id="settings-backdrop" hidden></div>
+  <div id="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+    <div class="st-head">
+      <div class="st-title" id="settings-title">Settings</div>
+      <button type="button" id="settings-close" class="ad-close" aria-label="Close settings">✕</button>
+    </div>
+
+    <div class="st-group">
+      <div class="st-group-title">Units</div>
+      <div class="st-row">
+        <div class="st-label">Speed</div>
+        <div class="st-seg" data-setting="speed" role="group" aria-label="Speed unit">
+          <button type="button" data-value="kts">kts</button>
+          <button type="button" data-value="mph">mph</button>
+          <button type="button" data-value="kmh">km/h</button>
+        </div>
+      </div>
+      <div class="st-row">
+        <div class="st-label">Altitude</div>
+        <div class="st-seg" data-setting="alt" role="group" aria-label="Altitude unit">
+          <button type="button" data-value="ft">ft</button>
+          <button type="button" data-value="m">m</button>
+        </div>
+      </div>
+      <div class="st-row">
+        <div class="st-label">Distance</div>
+        <div class="st-seg" data-setting="dist" role="group" aria-label="Distance unit">
+          <button type="button" data-value="nm">NM</button>
+          <button type="button" data-value="mi">mi</button>
+          <button type="button" data-value="km">km</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="st-group">
+      <div class="st-group-title">Theme</div>
+      <div class="st-seg st-themes" data-setting="theme" role="group" aria-label="Colour theme">
+        <button type="button" data-value="green"><span class="st-swatch" style="background:#00ff66"></span>Green</button>
+        <button type="button" data-value="ice"><span class="st-swatch" style="background:#4dd0ff"></span>Ice</button>
+        <button type="button" data-value="violet"><span class="st-swatch" style="background:#c792ff"></span>Violet</button>
+        <button type="button" data-value="mono"><span class="st-swatch" style="background:#e8e8e8"></span>Mono</button>
+      </div>
+    </div>
+
+    <div class="st-group">
+      <div class="st-group-title">Features</div>
+      <label class="st-toggle">
+        <span><strong>Rare-aircraft alerts</strong><small>Chime, banner and voice for A380s, Belugas, warbirds and display teams</small></span>
+        <input type="checkbox" data-toggle="rareAlerts">
+      </label>
+      <label class="st-toggle">
+        <span><strong>ATC audio links</strong><small>Show a LiveATC link for the nearest airfield when you tap an aircraft</small></span>
+        <input type="checkbox" data-toggle="atcLinks">
+      </label>
+      <label class="st-toggle">
+        <span><strong>Include my postcode in shared links</strong><small>Off: shared links open on the viewer's own location</small></span>
+        <input type="checkbox" data-toggle="shareLocation">
+      </label>
+    </div>
+
+    <div class="st-actions">
+      <button type="button" id="settings-copy-link" class="st-btn primary">🔗 Copy link to this setup</button>
+      <button type="button" id="settings-reset" class="st-btn">Reset</button>
+    </div>
+    <div id="settings-status" class="st-status" aria-live="polite"></div>
+  </div>
+
   <!-- AI-written recap of today's notable (military/alert) traffic. Built and filled by app.js
        (see openDailySummaryPanel/renderDailySummaryPanel). Reuses the aircraft-detail panel's
        visual language (ad-* classes) so it looks like part of the same feature, not a bolt-on. -->
@@ -74,7 +149,7 @@
 
     <aside class="sidebar">
       <div class="panel">
-        <div class="panel-title">Active Military Transponders Within 35NM</div>
+        <div class="panel-title" id="mil-panel-title">Active Military Transponders Within 35NM</div>
         <div id="aircraft-grid" class="aircraft-grid">
           <div style="color:var(--text-dim); font-size:0.75rem; padding: 0.5rem; text-align:center;">Scanning sector...</div>
         </div>

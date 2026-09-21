@@ -25,6 +25,159 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     const ROUTESET_PATH = '/api/0/routeset';
     const userConfig = { lat: 52.9529, lon: -0.9547, radiusNM: 35 };
 
+    // ---------------------------------------------------------------------
+    // User settings: units, theme and feature toggles (the ⚙️ panel)
+    // ---------------------------------------------------------------------
+    // Saved in localStorage. A shared link's query params (see buildShareLink) override the saved
+    // values for that visit only - they aren't written back until someone changes a setting in
+    // the panel. Every storage access is wrapped in try/catch: some browsers (private mode,
+    // locked-down kiosk profiles) throw on localStorage.
+    const SETTINGS_KEY = 'radarSettings';
+    const SETTINGS_DEFAULTS = {
+      speed: 'kts', alt: 'ft', dist: 'nm', theme: 'green',
+      rareAlerts: true, atcLinks: true, shareLocation: true
+    };
+    const SPEED_UNITS = {
+      kts: { label: 'kts', perKt: 1, spoken: 'knots' },
+      mph: { label: 'mph', perKt: 1.15078, spoken: 'miles per hour' },
+      kmh: { label: 'km/h', perKt: 1.852, spoken: 'kilometres per hour' }
+    };
+    const ALT_UNITS = {
+      ft: { label: 'ft', perFt: 1, spoken: 'feet' },
+      m: { label: 'm', perFt: 0.3048, spoken: 'metres' }
+    };
+    const DIST_UNITS = {
+      nm: { label: 'NM', perNm: 1, spoken: 'nautical miles' },
+      mi: { label: 'mi', perNm: 1.15078, spoken: 'miles' },
+      km: { label: 'km', perNm: 1.852, spoken: 'kilometres' }
+    };
+    // accent/rgb drive the highlight colour everywhere (CSS variables + the canvas scope); the
+    // rest tint the dark panels to match. Amber (military) and red (emergency) are meaningful
+    // colours, so they deliberately stay the same in every theme.
+    const THEMES = {
+      green:  { label: 'Green',  accent: '#00ff66', rgb: '0, 255, 102',   bg: '#030704', card: 'rgba(5, 15, 9, 0.95)',   border: '#0f381f', dim: '#2b7a4b', input: '#061a0d', tint: 'rgba(10, 30, 18, 0.8)', soft: 'rgba(15, 56, 31, 0.6)', btn: 'rgba(3, 7, 4, 0.75)' },
+      ice:    { label: 'Ice',    accent: '#4dd0ff', rgb: '77, 208, 255',  bg: '#030608', card: 'rgba(5, 10, 16, 0.95)',  border: '#0f2f42', dim: '#2b6a85', input: '#06131c', tint: 'rgba(10, 28, 40, 0.8)', soft: 'rgba(15, 47, 66, 0.6)', btn: 'rgba(3, 6, 8, 0.75)' },
+      violet: { label: 'Violet', accent: '#c792ff', rgb: '199, 146, 255', bg: '#06030a', card: 'rgba(12, 6, 20, 0.95)',  border: '#2c1a45', dim: '#6a4a8c', input: '#0f0719', tint: 'rgba(26, 14, 42, 0.8)', soft: 'rgba(44, 26, 69, 0.6)', btn: 'rgba(6, 3, 10, 0.75)' },
+      mono:   { label: 'Mono',   accent: '#e8e8e8', rgb: '232, 232, 232', bg: '#050505', card: 'rgba(12, 12, 12, 0.95)', border: '#2a2a2a', dim: '#7a7a7a', input: '#101010', tint: 'rgba(28, 28, 28, 0.8)', soft: 'rgba(42, 42, 42, 0.6)', btn: 'rgba(5, 5, 5, 0.75)' }
+    };
+
+    function sanitizeSettings(raw) {
+      const out = Object.assign({}, SETTINGS_DEFAULTS);
+      if (!raw || typeof raw !== 'object') return out;
+      const has = (obj, key) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(obj, key);
+      if (has(SPEED_UNITS, raw.speed)) out.speed = raw.speed;
+      if (has(ALT_UNITS, raw.alt)) out.alt = raw.alt;
+      if (has(DIST_UNITS, raw.dist)) out.dist = raw.dist;
+      if (has(THEMES, raw.theme)) out.theme = raw.theme;
+      ['rareAlerts', 'atcLinks', 'shareLocation'].forEach((k) => {
+        if (typeof raw[k] === 'boolean') out[k] = raw[k];
+      });
+      return out;
+    }
+    function readStoredSettings() {
+      try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); } catch (e) { return null; }
+    }
+    // Settings a shared link can carry - see buildShareLink() for the writing side.
+    function readUrlSettings() {
+      const q = new URLSearchParams(window.location.search);
+      const o = {};
+      if (q.get('spd')) o.speed = q.get('spd');
+      if (q.get('alt')) o.alt = q.get('alt');
+      if (q.get('dst')) o.dist = q.get('dst');
+      if (q.get('theme')) o.theme = q.get('theme');
+      if (q.has('rare')) o.rareAlerts = q.get('rare') !== '0';
+      if (q.has('atc')) o.atcLinks = q.get('atc') !== '0';
+      return o;
+    }
+    const settings = sanitizeSettings(Object.assign({}, readStoredSettings(), readUrlSettings()));
+    function saveSettings() {
+      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+    }
+
+    // --- Unit formatting. Everything upstream (ADS-B) is knots / feet / nautical miles; these
+    // convert at the last moment for display and for speech.
+    function fmtSpeed(kts) {
+      const u = SPEED_UNITS[settings.speed];
+      return `${Math.round(kts * u.perKt)} ${u.label}`;
+    }
+    // Chosen unit first, then a familiar second one (mph if you picked knots, otherwise knots).
+    function fmtSpeedBoth(kts) {
+      const second = settings.speed === 'kts' ? SPEED_UNITS.mph : SPEED_UNITS.kts;
+      return `${fmtSpeed(kts)} · ${Math.round(kts * second.perKt)} ${second.label}`;
+    }
+    function fmtAlt(ft, plain) {
+      const u = ALT_UNITS[settings.alt];
+      const v = Math.round(ft * u.perFt);
+      return `${plain ? v : v.toLocaleString('en-GB')} ${u.label}`;
+    }
+    // ADS-B altitude is a number, the string 'ground', or missing.
+    function fmtAltOrGround(alt, plain) {
+      const n = Number(alt);
+      return (alt && Number.isFinite(n)) ? fmtAlt(n, plain) : 'Ground';
+    }
+    function fmtDist(nm, digits) {
+      const u = DIST_UNITS[settings.dist];
+      return `${(nm * u.perNm).toFixed(digits === undefined ? 1 : digits)} ${u.label}`;
+    }
+    // Vertical rate arrives in ft/min. Metric shows the aviation-standard m/s.
+    function fmtVRate(ftPerMin, short) {
+      if (settings.alt === 'm') return `${(Math.abs(ftPerMin) * 0.3048 / 60).toFixed(1)} m/s`;
+      return `${Math.round(Math.abs(ftPerMin))} ${short ? 'ft/m' : 'ft/min'}`;
+    }
+    function spokenAlt(ft) {
+      const n = Number(ft);
+      if (!ft || !Number.isFinite(n)) return 'ground level';
+      const u = ALT_UNITS[settings.alt];
+      return `${Math.round(n * u.perFt)} ${u.spoken}`;
+    }
+    function spokenSpeed(kts) {
+      const u = SPEED_UNITS[settings.speed];
+      const main = `${Math.round(kts * u.perKt)} ${u.spoken}`;
+      // Keep the original "knots, or miles per hour" phrasing when knots are selected.
+      return settings.speed === 'kts' ? `${main}, or ${Math.round(kts * SPEED_UNITS.mph.perKt)} miles per hour` : main;
+    }
+    function spokenDist(nm) {
+      const u = DIST_UNITS[settings.dist];
+      return `${(nm * u.perNm).toFixed(1)} ${u.spoken}`;
+    }
+    // Altitude-legend label for band i (bands are defined in feet; see ALTITUDE_BANDS).
+    function altitudeBandLabel(i) {
+      const u = ALT_UNITS[settings.alt];
+      const round = (ft) => {
+        const v = ft * u.perFt;
+        return (settings.alt === 'm' ? Math.round(v / 10) * 10 : Math.round(v)).toLocaleString('en-GB');
+      };
+      const lo = i === 0 ? null : ALTITUDE_BANDS[i - 1].maxFt;
+      const hi = ALTITUDE_BANDS[i].maxFt;
+      if (lo === null) return `< ${round(hi)} ${u.label}`;
+      if (hi === Infinity) return `${round(lo)}+ ${u.label}`;
+      return `${round(lo)}–${round(hi)} ${u.label}`;
+    }
+
+    // --- Theme. CSS reads the variables; the canvas scope reads accentRgba()/currentTheme().
+    function currentTheme() { return THEMES[settings.theme] || THEMES.green; }
+    function accentRgba(alpha) { return `rgba(${currentTheme().rgb}, ${alpha})`; }
+    function applyTheme() {
+      const t = currentTheme();
+      const st = document.documentElement.style;
+      st.setProperty('--accent-green', t.accent);
+      st.setProperty('--text-main', t.accent);
+      st.setProperty('--accent-rgb', t.rgb);
+      st.setProperty('--bg-color', t.bg);
+      st.setProperty('--card-bg', t.card);
+      st.setProperty('--card-border', t.border);
+      st.setProperty('--text-dim', t.dim);
+      st.setProperty('--input-bg', t.input);
+      st.setProperty('--tint-bg', t.tint);
+      st.setProperty('--border-soft', t.soft);
+      st.setProperty('--btn-bg', t.btn);
+      document.documentElement.dataset.theme = settings.theme;
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', t.bg);
+    }
+    applyTheme();
+    let settingsOpen = false; // the ⚙️ panel; the debug keyboard shortcuts stay quiet while it's open
+
     // --- Postcode-based station location ---------------------------------
     // Supports linking to e.g. {site}/radar/AB12 3CD - looks for a URL path
     // segment immediately after one literally named "radar" and, if present,
@@ -98,7 +251,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     let needsPostcodePrompt = false;
 
     async function resolveStationCoords() {
-      const rawSegment = extractPostcodeFromPath();
+      // ?pc= is what shared links use (see buildShareLink): unlike the old /radar/<postcode> path
+      // it loads the normal index.html on any server. The path form is still honoured.
+      const rawSegment = new URLSearchParams(window.location.search).get('pc') || extractPostcodeFromPath();
       if (rawSegment) {
         const result = await geocodePostcode(rawSegment);
         if (!result.error) {
@@ -591,6 +746,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // there's no keyboard for the shortcut below.
       const testParam = new URLSearchParams(window.location.search).get('testsquawk');
       if (testParam) triggerTestSquawk(testParam);
+      const testRare = new URLSearchParams(window.location.search).get('testrare');
+      if (testRare) triggerTestRare(testRare);
     }
 
     // ---------------------------------------------------------------------
@@ -639,12 +796,13 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // field, or entering a postcode with a 5, 6, 7, 9 or 0 in it sets off fake alerts.
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-      if (!feedStarted) return;
+      if (!feedStarted || settingsOpen) return;
       if (e.key === '5') triggerTestSquawk('7500');
       else if (e.key === '6') triggerTestSquawk('7600');
       else if (e.key === '7') triggerTestSquawk('7700');
       else if (e.key === '9') triggerTestSquawk('7777');
       else if (e.key === '0') triggerTestMilitary();
+      else if (e.key === '8') triggerTestRare('A388');
 
       if (/^[a-zA-Z]$/.test(e.key)) {
         ufoTypedBuffer = (ufoTypedBuffer + e.key.toLowerCase()).slice(-3);
@@ -1227,7 +1385,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           const bearing = calcBearing(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
           const posCardinal = getCardinalFromDeg(bearing);
           const trackCardinal = getCardinalFromDeg(ac.track !== undefined ? ac.track : 0);
-          const altText = ac.alt_baro ? `${Math.round(ac.alt_baro)} feet` : 'ground level';
+          const altText = spokenAlt(ac.alt_baro);
           
           const speedKts = ac.gs !== undefined ? Math.round(ac.gs) : 0;
           const speedMph = Math.round(speedKts * 1.15078);
@@ -1235,7 +1393,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           // Randomly select one of the phrases from the array to add on top
           const randomPhrase = randomAddonPhrases[Math.floor(Math.random() * randomAddonPhrases.length)];
 
-          const speechText = `${randomPhrase} Proximity alert. Military aircraft callsign ${callsign} is heading in from the ${posCardinal} and moving ${trackCardinal} at ${altText} altitude, travelling at ${speedKts} knots, or ${speedMph} miles per hour, ${dist.toFixed(1)} miles away.`;
+          const speechText = `${randomPhrase} Proximity alert. Military aircraft callsign ${callsign} is heading in from the ${posCardinal} and moving ${trackCardinal} at ${altText} altitude, travelling at ${spokenSpeed(speedKts)}, ${spokenDist(dist)} away.`;
           
           if ('speechSynthesis' in window) {
             const utterance = new SpeechSynthesisUtterance(speechText);
@@ -1302,8 +1460,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     function buildAltitudeLegend() {
       const el = document.getElementById('altitude-legend');
       if (!el) return;
-      el.innerHTML = ALTITUDE_BANDS.map(b =>
-        `<div class="legend-row"><span class="legend-dot" style="background:${b.color};"></span>${b.label}</div>`
+      el.innerHTML = ALTITUDE_BANDS.map((b, i) =>
+        `<div class="legend-row"><span class="legend-dot" style="background:${b.color};"></span>${altitudeBandLabel(i)}</div>`
       ).join('');
     }
 
@@ -1620,10 +1778,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
       const radiusMeters = userConfig.radiusNM * 1852;
       radarCircle = L.circle([userConfig.lat, userConfig.lon], {
-        color: '#00ff66',
+        color: currentTheme().accent,
         weight: 2,
         opacity: 0.8,
-        fillColor: '#00ff66',
+        fillColor: currentTheme().accent,
         fillOpacity: 0.05,
         radius: radiusMeters
       }).addTo(map);
@@ -1830,10 +1988,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
       // shadowBlur is specified in device pixels and ignores the transform, so it has to be
       // multiplied by the density to look the same width at 2x as at 1x.
-      sctx.shadowColor = '#00ff66';
+      sctx.shadowColor = currentTheme().accent;
       sctx.shadowBlur = 8 * canvasDpr;
 
-      sctx.strokeStyle = 'rgba(0, 255, 102, 0.35)';
+      sctx.strokeStyle = accentRgba(0.35);
       sctx.lineWidth = 1;
       [0.25, 0.5, 0.75, 1.0].forEach((factor) => {
         const r = maxRadiusPx * factor;
@@ -1841,9 +1999,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         sctx.arc(centerPt.x, centerPt.y, r, 0, 2 * Math.PI);
         sctx.stroke();
 
-        sctx.fillStyle = 'rgba(0, 255, 102, 0.8)';
+        sctx.fillStyle = accentRgba(0.8);
         sctx.font = `${9 * s}px system-ui`;
-        sctx.fillText(`${(userConfig.radiusNM * factor).toFixed(0)} NM`, centerPt.x + 4 * s, centerPt.y - r + 10 * s);
+        sctx.fillText(fmtDist(userConfig.radiusNM * factor, 0), centerPt.x + 4 * s, centerPt.y - r + 10 * s);
       });
 
       sctx.beginPath();
@@ -1851,10 +2009,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       sctx.lineTo(centerPt.x + maxRadiusPx, centerPt.y);
       sctx.moveTo(centerPt.x, centerPt.y - maxRadiusPx);
       sctx.lineTo(centerPt.x, centerPt.y + maxRadiusPx);
-      sctx.strokeStyle = 'rgba(0, 255, 102, 0.25)';
+      sctx.strokeStyle = accentRgba(0.25);
       sctx.stroke();
 
-      sctx.fillStyle = '#00ff66';
+      sctx.fillStyle = currentTheme().accent;
       sctx.font = `bold ${11 * s}px system-ui`;
       sctx.fillText('N', centerPt.x - 4 * s, centerPt.y - maxRadiusPx - 5 * s);
       sctx.fillText('S', centerPt.x - 4 * s, centerPt.y + maxRadiusPx + 15 * s);
@@ -2054,6 +2212,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (isConnected) {
         renderFlightBoard(liveAircraft);
         updateNearestScrollboard(liveAircraft);
+        checkRareAircraft(liveAircraft);
+        checkLinkedAircraft();
         refreshAircraftDetail();
         recordDailyLogEntries(liveAircraft);
       }
@@ -2209,7 +2369,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const militaryList = acList.filter(ac => isMilitary(ac));
 
       if (!militaryList || militaryList.length === 0) {
-        gridEl.innerHTML = '<div style="color:var(--text-dim); font-size:0.75rem; padding: 0.5rem; text-align:center;">No active military transponders within 35 NM.</div>';
+        gridEl.innerHTML = `<div style="color:var(--text-dim); font-size:0.75rem; padding: 0.5rem; text-align:center;">No active military transponders within ${fmtDist(userConfig.radiusNM, 0)}.</div>`;
         internalScrollPos = 0;
         return;
       }
@@ -2237,11 +2397,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           </div>
           <div style="flex: 1; min-width: 0;">
             <div style="font-weight:bold; font-size:0.78rem; color:var(--accent-military); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 5px rgba(255,176,0,0.4);">${ac.flight ? ac.flight.trim() : ac.hex}</div>
-            <div style="font-size:0.65rem; color:var(--text-dim);">[${ac.t || 'MIL'}] • ${ac.gs || 0} kts</div>
+            <div style="font-size:0.65rem; color:var(--text-dim);">[${ac.t || 'MIL'}] • ${fmtSpeed(ac.gs || 0)}</div>
           </div>
           <div style="text-align:right; flex-shrink: 0;">
-            <div style="font-weight:bold; color:var(--accent-green); font-size:0.78rem; text-shadow: 0 0 5px rgba(0,255,102,0.4);">${dist.toFixed(1)} NM</div>
-            <div style="font-size:0.65rem; color:var(--text-dim);">${ac.alt_baro || 'Ground'} ft</div>
+            <div style="font-weight:bold; color:var(--accent-green); font-size:0.78rem; text-shadow: 0 0 5px rgba(var(--accent-rgb),0.4);">${fmtDist(dist)}</div>
+            <div style="font-size:0.65rem; color:var(--text-dim);">${fmtAltOrGround(ac.alt_baro, true)}</div>
           </div>
         `;
         gridEl.appendChild(card);
@@ -2426,11 +2586,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       fetchAircraftPhoto(lockedAircraft, isMilitary(lockedAircraft));
 
       const speedKts = lockedAircraft.gs !== undefined ? Math.round(lockedAircraft.gs) : 0;
-      const speedMph = Math.round(speedKts * 1.15078);
+      const speedSecond = settings.speed === 'kts' ? SPEED_UNITS.mph : SPEED_UNITS.kts;
 
-      document.getElementById('sb-distance').innerText = `${dist.toFixed(1)} NM`;
-      document.getElementById('sb-alt').innerText = `Alt: ${lockedAircraft.alt_baro || 'Ground'} ft`;
-      document.getElementById('sb-speed').innerText = `Spd: ${speedKts} kts (${speedMph} mph)`;
+      document.getElementById('sb-distance').innerText = fmtDist(dist);
+      document.getElementById('sb-alt').innerText = `Alt: ${fmtAltOrGround(lockedAircraft.alt_baro, true)}`;
+      document.getElementById('sb-speed').innerText = `Spd: ${fmtSpeed(speedKts)} (${Math.round(speedKts * speedSecond.perKt)} ${speedSecond.label})`;
 
       const airlineEl = document.getElementById('sb-airline');
       const planeLabel = lockedAircraft.flight ? lockedAircraft.flight.trim() : lockedAircraft.hex;
@@ -2447,7 +2607,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       } else {
         airlineEl.innerText = flightStr;
         airlineEl.style.color = 'var(--accent-green)';
-        airlineEl.style.textShadow = '0 0 8px rgba(0,255,102,0.4)';
+        airlineEl.style.textShadow = '0 0 8px rgba(var(--accent-rgb),0.4)';
       }
 
       document.getElementById('sb-type').innerText = `Type: ${lockedAircraft.t || 'Aircraft'}`;
@@ -2459,9 +2619,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const vertRate = lockedAircraft.baro_rate !== undefined ? lockedAircraft.baro_rate : 0;
       const rateEl = document.getElementById('sb-rate');
       if (vertRate > 30) {
-        rateEl.innerHTML = `<span style="color: var(--accent-green); text-shadow: 0 0 6px rgba(0,255,102,0.4);">▲ +${vertRate} ft/m</span>`;
+        rateEl.innerHTML = `<span style="color: var(--accent-green); text-shadow: 0 0 6px rgba(var(--accent-rgb),0.4);">▲ +${fmtVRate(vertRate, true)}</span>`;
       } else if (vertRate < -30) {
-        rateEl.innerHTML = `<span style="color: var(--accent-red); text-shadow: 0 0 6px rgba(255,51,51,0.4);">▼ ${vertRate} ft/m</span>`;
+        rateEl.innerHTML = `<span style="color: var(--accent-red); text-shadow: 0 0 6px rgba(255,51,51,0.4);">▼ -${fmtVRate(vertRate, true)}</span>`;
       } else {
         rateEl.innerHTML = `<span style="color: var(--text-dim);">— Level Flight</span>`;
       }
@@ -2587,19 +2747,19 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         ctx.beginPath();
         ctx.moveTo(centerPt.x, centerPt.y);
         ctx.lineTo(trailX, trailY);
-        ctx.strokeStyle = `rgba(0, 255, 102, ${0.12 * (1 - i / 15)})`;
+        ctx.strokeStyle = accentRgba(0.12 * (1 - i / 15));
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
 
       const sweepX = centerPt.x + Math.cos(sweepAngle) * maxRadiusPx;
       const sweepY = centerPt.y + Math.sin(sweepAngle) * maxRadiusPx;
-      ctx.shadowColor = '#00ff66';
+      ctx.shadowColor = currentTheme().accent;
       ctx.shadowBlur = 6 * canvasDpr;
       ctx.beginPath();
       ctx.moveTo(centerPt.x, centerPt.y);
       ctx.lineTo(sweepX, sweepY);
-      ctx.strokeStyle = 'rgba(0, 255, 102, 0.9)';
+      ctx.strokeStyle = accentRgba(0.9);
       ctx.lineWidth = 2;
       ctx.stroke();
       ctx.shadowBlur = 0;
@@ -2789,6 +2949,529 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // hex -> { status: 'loading' | 'ok' | 'error' | 'unavailable', info, message, retryable, model }
     const aircraftProfileState = {};
 
+    // ---------------------------------------------------------------------
+    // UK squawk decoder
+    // ---------------------------------------------------------------------
+    // Special-purpose Mode A codes from the UK AIP (ENR 1.6). The distress codes and 7777 keep
+    // their own wording in SQUAWK_SHORT_LABELS / SQUAWK_MEANINGS; these are the everyday
+    // conspicuity and special-activity codes that make a squawk worth reading. kind 'notable'
+    // codes also get a tag under the callsign; 'info' codes only show in the Squawk stat.
+    const UK_SQUAWK_CODES = {
+      '7000': { short: 'VFR', long: 'VFR conspicuity code - no air traffic service requested', kind: 'info' },
+      '7001': { short: 'MIL LOW-LEVEL', long: 'Military fixed-wing low-level conspicuity or climb-out', kind: 'notable' },
+      '7002': { short: 'DANGER AREA', long: 'Working in or near a danger area', kind: 'info' },
+      '7003': { short: 'RED ARROWS', long: 'Red Arrows transit or display', kind: 'notable' },
+      '7004': { short: 'AEROBATICS', long: 'Aerobatics or a flying display in progress', kind: 'notable' },
+      '7005': { short: 'HIGH-ENERGY', long: 'High-energy manoeuvres', kind: 'notable' },
+      '7006': { short: 'TRA OPS', long: 'Autonomous operations inside a temporary reserved area', kind: 'notable' },
+      '7007': { short: 'OPEN SKIES', long: 'Open Skies treaty observation aircraft', kind: 'notable' },
+      '7010': { short: 'CIRCUIT', long: 'Flying in the aerodrome circuit (traffic pattern)', kind: 'info' },
+      '7400': { short: 'DRONE LINK LOST', long: 'Unmanned aircraft has lost its control link', kind: 'notable' }
+    };
+    const ALERT_SQUAWK_LONG = {
+      '7500': 'Hijacking or unlawful interference',
+      '7600': 'Radio failure',
+      '7700': 'General emergency',
+      '7777': 'Quick Reaction Alert fighter intercept'
+    };
+    // -> { short, long, kind } for any squawk this app knows how to explain, else null.
+    function describeSquawk(code) {
+      const c = String(code || '');
+      if (SQUAWK_SHORT_LABELS[c]) return { short: SQUAWK_SHORT_LABELS[c], long: ALERT_SQUAWK_LONG[c] || '', kind: 'alert' };
+      return Object.prototype.hasOwnProperty.call(UK_SQUAWK_CODES, c) ? UK_SQUAWK_CODES[c] : null;
+    }
+
+    // ---------------------------------------------------------------------
+    // Rare-aircraft alerts
+    // ---------------------------------------------------------------------
+    // Matches on the ICAO type code. Civil rarities and warbirds mostly - military traffic already
+    // has its own proximity alert (announceMilitaryAircraft), so a rare military aircraft only gets
+    // the banner and chime here, not a second spoken announcement.
+    const RARE_TYPES = {
+      A388: 'Airbus A380', A3ST: 'Airbus Beluga', A337: 'Airbus Beluga XL', A124: 'Antonov An-124 Ruslan',
+      AN22: 'Antonov An-22', BLCF: 'Boeing 747 Dreamlifter', B741: 'Boeing 747-100', B742: 'Boeing 747-200',
+      B743: 'Boeing 747-300', VC10: 'Vickers VC10', SPIT: 'Supermarine Spitfire', HURI: 'Hawker Hurricane',
+      LANC: 'Avro Lancaster', B17: 'B-17 Flying Fortress', B25: 'B-25 Mitchell', P51: 'P-51 Mustang',
+      DC3: 'Douglas DC-3 Dakota'
+    };
+    // Special UK squawks that mark something worth looking up for (see UK_SQUAWK_CODES).
+    const RARE_SQUAWKS = { '7003': 'Red Arrows', '7007': 'Open Skies observation aircraft' };
+    const RARE_REPEAT_COOLDOWN_MS = 60 * 60 * 1000; // a loitering A380 shouldn't chime every few minutes
+    const RARE_BANNER_MS = 15000;
+    const rareAnnouncedAt = new Map();
+    let rareBannerTimer = null;
+
+    function classifyRare(ac) {
+      const type = String(ac.t || '').trim().toUpperCase();
+      if (Object.prototype.hasOwnProperty.call(RARE_TYPES, type)) return { label: RARE_TYPES[type], reason: 'type' };
+      const sq = String(ac.squawk || '');
+      if (Object.prototype.hasOwnProperty.call(RARE_SQUAWKS, sq)) return { label: RARE_SQUAWKS[sq], reason: 'squawk' };
+      return null;
+    }
+
+    function playRareTone() {
+      if (!audioAlertsEnabled) return;
+      try {
+        if (!audioCtx) initKioskAudio();
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        const t0 = audioCtx.currentTime;
+        // Three rising notes - deliberately unlike the falling single chirp used for military.
+        [[660, 0], [880, 0.16], [1320, 0.32]].forEach(([freq, at]) => {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, t0 + at);
+          gain.gain.setValueAtTime(0.0001, t0 + at);
+          gain.gain.exponentialRampToValueAtTime(0.14, t0 + at + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, t0 + at + 0.22);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(t0 + at);
+          osc.stop(t0 + at + 0.25);
+        });
+      } catch (e) {}
+    }
+
+    function hideRareBanner() {
+      clearTimeout(rareBannerTimer);
+      const el = document.getElementById('rare-banner');
+      if (el) el.hidden = true;
+    }
+
+    function showRareBanner(ac, rare, dist) {
+      const el = document.getElementById('rare-banner');
+      if (!el) return;
+      const callsign = (ac.flight || '').trim() || String(ac.hex).toUpperCase();
+      el.textContent = '';
+      el.appendChild(adEl('span', 'rb-star', '★'));
+      const body = adEl('span', 'rb-text');
+      body.appendChild(adEl('strong', null, rare.label));
+      body.appendChild(document.createTextNode(` · ${callsign} · ${fmtDist(dist)}`));
+      el.appendChild(body);
+      el.onclick = () => {
+        const live = liveAircraft.find((a) => a.hex === ac.hex) || ac;
+        selectAircraft(live);
+        hideRareBanner();
+      };
+      el.hidden = false;
+      clearTimeout(rareBannerTimer);
+      rareBannerTimer = setTimeout(hideRareBanner, RARE_BANNER_MS);
+    }
+
+    function announceRareAircraft(ac, rare, dist) {
+      showRareBanner(ac, rare, dist);
+      playRareTone();
+      if (isMilitary(ac) || !('speechSynthesis' in window)) return;
+      const callsign = (ac.flight || '').trim();
+      const dir = getCardinalFromDeg(calcBearing(userConfig.lat, userConfig.lon, ac.lat, ac.lon));
+      const altPart = (ac.alt_baro && Number.isFinite(Number(ac.alt_baro))) ? `, at ${spokenAlt(ac.alt_baro)}` : '';
+      const text = `Rare aircraft spotted. ${rare.label}${callsign ? `, callsign ${callsign}` : ''}, ${spokenDist(dist)} to the ${dir}${altPart}.`;
+      // Let the chime finish first. cancel() clears a stuck queue - see the keep-alive in startFeed().
+      setTimeout(() => {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+      }, 600);
+    }
+
+    function checkRareAircraft(acList) {
+      if (!settings.rareAlerts) return;
+      (acList || []).forEach((ac) => {
+        if (!ac || !ac.hex || !Number.isFinite(ac.lat) || !Number.isFinite(ac.lon)) return;
+        const rare = classifyRare(ac);
+        if (!rare) return;
+        const dist = calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
+        if (dist > userConfig.radiusNM) return;
+        const last = rareAnnouncedAt.get(ac.hex);
+        if (last !== undefined && Date.now() - last < RARE_REPEAT_COOLDOWN_MS) return;
+        rareAnnouncedAt.set(ac.hex, Date.now());
+        announceRareAircraft(ac, rare, dist);
+      });
+    }
+
+    // Test hook, same idea as triggerTestSquawk: triggerTestRare('A388') injects a fake rare
+    // type; a 4-digit argument (e.g. '7003') injects an ordinary jet with that squawk instead.
+    // Also: ?testrare=A388 in the URL, or press 8 once the feed has started.
+    function triggerTestRare(arg) {
+      arg = String(arg || 'A388').toUpperCase();
+      const isSquawk = /^[0-7]{4}$/.test(arg);
+      testAircraft = Object.assign(buildTestAircraft(isSquawk ? arg : '2000'), {
+        flight: 'TESTRARE ', t: isSquawk ? 'B738' : arg, category: 'A5'
+      });
+      testAircraftExpiryAt = Date.now() + TEST_AIRCRAFT_TTL_MS;
+      liveAircraft = liveAircraft.filter((a) => !a.hex || !a.hex.startsWith('TEST')).concat([testAircraft]);
+      recomputeAircraftPixelCache();
+      updateUIState(true);
+    }
+    window.triggerTestRare = triggerTestRare;
+
+    // ---------------------------------------------------------------------
+    // Live ATC audio link
+    // ---------------------------------------------------------------------
+    // The airfield nearest the selected aircraft, linked to LiveATC's search for that ICAO code.
+    // LiveATC only covers some airfields, so the link can land on "no feeds found" - the tooltip
+    // says so. Off entirely when the "ATC audio links" setting is off.
+    const ATC_MAX_DISTANCE_NM = 60;
+    const ATC_AIRFIELDS = [
+      ['EGLL', 'London Heathrow', 51.4700, -0.4543], ['EGKK', 'London Gatwick', 51.1481, -0.1903],
+      ['EGGW', 'London Luton', 51.8747, -0.3683], ['EGSS', 'London Stansted', 51.8860, 0.2389],
+      ['EGLC', 'London City', 51.5053, 0.0553], ['EGWU', 'RAF Northolt', 51.5530, -0.4182],
+      ['EGKB', 'Biggin Hill', 51.3308, 0.0325], ['EGMC', 'Southend', 51.5714, 0.6956],
+      ['EGLF', 'Farnborough', 51.2758, -0.7763], ['EGHI', 'Southampton', 50.9503, -1.3568],
+      ['EGHH', 'Bournemouth', 50.7800, -1.8425], ['EGKA', 'Shoreham', 50.8356, -0.2972],
+      ['EGGD', 'Bristol', 51.3827, -2.7191], ['EGFF', 'Cardiff', 51.3967, -3.3433],
+      ['EGTE', 'Exeter', 50.7344, -3.4139], ['EGHQ', 'Newquay', 50.4406, -4.9954],
+      ['EGBB', 'Birmingham', 52.4539, -1.7480], ['EGNX', 'East Midlands', 52.8311, -1.3281],
+      ['EGBE', 'Coventry', 52.3697, -1.4797], ['EGBN', 'Nottingham', 52.9200, -1.0792],
+      ['EGBG', 'Leicester', 52.6078, -1.0319], ['EGSC', 'Cambridge', 52.2050, 0.1750],
+      ['EGSH', 'Norwich', 52.6758, 1.2828], ['EGTK', 'Oxford', 51.8369, -1.3200],
+      ['EGBJ', 'Gloucestershire', 51.8942, -2.1672], ['EGCC', 'Manchester', 53.3537, -2.2750],
+      ['EGGP', 'Liverpool John Lennon', 53.3336, -2.8497], ['EGNM', 'Leeds Bradford', 53.8659, -1.6606],
+      ['EGNH', 'Blackpool', 53.7717, -3.0286], ['EGNJ', 'Humberside', 53.5744, -0.3508],
+      ['EGNR', 'Hawarden', 53.1781, -2.9778], ['EGNT', 'Newcastle', 55.0375, -1.6917],
+      ['EGNV', 'Teesside', 54.5092, -1.4294], ['EGNS', 'Isle of Man', 54.0833, -4.6239],
+      ['EGPH', 'Edinburgh', 55.9500, -3.3725], ['EGPF', 'Glasgow', 55.8642, -4.4328],
+      ['EGPK', 'Prestwick', 55.5094, -4.5867], ['EGPD', 'Aberdeen', 57.2019, -2.1978],
+      ['EGPE', 'Inverness', 57.5425, -4.0475], ['EGAA', 'Belfast International', 54.6575, -6.2158],
+      ['EGAC', 'Belfast City', 54.6181, -5.8725], ['EIDW', 'Dublin', 53.4213, -6.2701],
+      ['EGJJ', 'Jersey', 49.2079, -2.1955], ['EGJB', 'Guernsey', 49.4350, -2.6019],
+      ['EGVN', 'RAF Brize Norton', 51.7500, -1.5836], ['EGVA', 'RAF Fairford', 51.6822, -1.7900],
+      ['EGUN', 'RAF Mildenhall', 52.3617, 0.4864], ['EGUL', 'RAF Lakenheath', 52.4093, 0.5610],
+      ['EGXC', 'RAF Coningsby', 53.0929, -0.1650], ['EGXW', 'RAF Waddington', 53.1662, -0.5238],
+      ['EGYD', 'RAF Cranwell', 53.0303, -0.4832], ['EGXE', 'RAF Leeming', 54.2919, -1.5354],
+      ['EGXT', 'RAF Wittering', 52.6126, -0.4764], ['EGYM', 'RAF Marham', 52.6484, 0.5506],
+      ['EGXH', 'RAF Honington', 52.3426, 0.7729], ['EGWC', 'RAF Cosford', 52.6383, -2.3056],
+      ['EGOS', 'RAF Shawbury', 52.7982, -2.6678], ['EGOV', 'RAF Valley', 53.2481, -4.5353],
+      ['EGQS', 'RAF Lossiemouth', 57.7052, -3.3392], ['EGVO', 'RAF Odiham', 51.2341, -0.9428],
+      ['EGDM', 'MoD Boscombe Down', 51.1522, -1.7475], ['EGDY', 'RNAS Yeovilton', 51.0094, -2.6389],
+      ['EGSU', 'Duxford', 52.0908, 0.1319]
+    ];
+
+    // -> { icao, name, distNM } for the closest airfield within ATC_MAX_DISTANCE_NM, else null.
+    // Military stations are skipped unless the aircraft is military: LiveATC has few of them, so a
+    // civil aircraft passing an RAF base is better pointed at the nearest civil airfield.
+    const ATC_MILITARY_NAME = /^(RAF|RNAS|MoD)\b/;
+    function nearestAtcAirfield(lat, lon, includeMilitary) {
+      let best = null;
+      for (const [icao, name, aLat, aLon] of ATC_AIRFIELDS) {
+        if (!includeMilitary && ATC_MILITARY_NAME.test(name)) continue;
+        const d = calcDistanceNM(lat, lon, aLat, aLon);
+        if (d <= ATC_MAX_DISTANCE_NM && (!best || d < best.distNM)) best = { icao, name, distNM: d };
+      }
+      return best;
+    }
+    function liveAtcUrl(icao) {
+      return `https://www.liveatc.net/search/?icao=${encodeURIComponent(icao)}`;
+    }
+
+    // ---------------------------------------------------------------------
+    // Shareable links
+    // ---------------------------------------------------------------------
+    // Builds a link to this site that carries the current setup: location (?pc=, unless the
+    // "include my postcode" setting is off), any non-default settings, and optionally one aircraft
+    // (?ac=<hex>) which the page selects as soon as it shows up in the feed. The location goes in
+    // ?pc= rather than the older /radar/<postcode> path form because that path isn't a real file -
+    // the server answers it with 404.html - whereas the query string always loads index.html.
+    function buildShareLink(opts) {
+      opts = opts || {};
+      const q = new URLSearchParams();
+      const pc = settings.shareLocation ? getCookie(POSTCODE_COOKIE) : null;
+      if (pc) q.set('pc', pc);
+      if (settings.speed !== SETTINGS_DEFAULTS.speed) q.set('spd', settings.speed);
+      if (settings.alt !== SETTINGS_DEFAULTS.alt) q.set('alt', settings.alt);
+      if (settings.dist !== SETTINGS_DEFAULTS.dist) q.set('dst', settings.dist);
+      if (settings.theme !== SETTINGS_DEFAULTS.theme) q.set('theme', settings.theme);
+      if (settings.rareAlerts !== SETTINGS_DEFAULTS.rareAlerts) q.set('rare', settings.rareAlerts ? '1' : '0');
+      if (settings.atcLinks !== SETTINGS_DEFAULTS.atcLinks) q.set('atc', settings.atcLinks ? '1' : '0');
+      if (opts.hex && /^[0-9a-f]{6}$/i.test(String(opts.hex))) q.set('ac', String(opts.hex).toLowerCase());
+      let basePath = window.location.pathname;
+      const radarIdx = basePath.toLowerCase().indexOf('/radar/');
+      basePath = radarIdx !== -1 ? basePath.slice(0, radarIdx + 1) : basePath.replace(/[^/]*$/, '');
+      const qs = q.toString();
+      return `${window.location.origin}${basePath}${qs ? `?${qs}` : ''}`;
+    }
+
+    // ?ac=<hex> from a shared link: select that aircraft once it appears in the feed. Gives up
+    // after a few minutes so a plane that has long since left doesn't keep the check running.
+    const linkedAircraftHexParam = new URLSearchParams(window.location.search).get('ac');
+    let linkedAircraftPending = (linkedAircraftHexParam && /^[0-9a-f]{6}$/i.test(linkedAircraftHexParam))
+      ? linkedAircraftHexParam.toLowerCase() : null;
+    const linkedAircraftDeadline = Date.now() + 5 * 60 * 1000;
+    function checkLinkedAircraft() {
+      if (!linkedAircraftPending) return;
+      const ac = liveAircraft.find((a) => String(a.hex).toLowerCase() === linkedAircraftPending);
+      if (ac) {
+        linkedAircraftPending = null;
+        selectAircraft(ac);
+      } else if (Date.now() > linkedAircraftDeadline) {
+        linkedAircraftPending = null;
+      }
+    }
+
+    async function copyText(text) {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch (e) { /* fall through to the textarea route */ }
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;font-size:16px;';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Share an aircraft (image + link)
+    // ---------------------------------------------------------------------
+    // The photo, loaded with CORS so it can be drawn onto the canvas without tainting it (a
+    // tainted canvas can't be exported). Null when there's no photo or its host doesn't allow it -
+    // the card then gets a radar motif instead.
+    let sharePhotoImg = null;
+    let shareStatusTimer = null;
+
+    function loadShareImage(url) {
+      return new Promise((resolve) => {
+        if (!url) { resolve(null); return; }
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        const timer = setTimeout(() => resolve(null), 6000);
+        img.onload = () => { clearTimeout(timer); resolve(img.naturalWidth ? img : null); };
+        img.onerror = () => { clearTimeout(timer); resolve(null); };
+        img.src = url;
+      });
+    }
+
+    function setShareStatus(text) {
+      const el = document.getElementById('ad-share-status');
+      if (!el) return;
+      el.textContent = text || '';
+      clearTimeout(shareStatusTimer);
+      if (text) shareStatusTimer = setTimeout(() => { el.textContent = ''; }, 5000);
+    }
+
+    function cardRoundRect(g, x, y, w, h, r) {
+      g.beginPath();
+      g.moveTo(x + r, y);
+      g.arcTo(x + w, y, x + w, y + h, r);
+      g.arcTo(x + w, y + h, x, y + h, r);
+      g.arcTo(x, y + h, x, y, r);
+      g.arcTo(x, y, x + w, y, r);
+      g.closePath();
+    }
+
+    // Draws the 1080x1350 share picture for an aircraft from its current data.
+    function drawAircraftShareCard(ac, photoImg) {
+      const W = 1080, H = 1350, PAD = 64;
+      const t = currentTheme();
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const g = c.getContext('2d');
+      const font = (px, weight) => `${weight || 400} ${px}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+      const fit = (text, maxW, startPx, weight) => {
+        let px = startPx;
+        g.font = font(px, weight);
+        while (px > 22 && g.measureText(text).width > maxW) { px -= 2; g.font = font(px, weight); }
+        return px;
+      };
+
+      const bg = g.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, t.bg);
+      bg.addColorStop(1, '#000000');
+      g.fillStyle = bg;
+      g.fillRect(0, 0, W, H);
+      g.strokeStyle = accentRgba(0.55);
+      g.lineWidth = 4;
+      cardRoundRect(g, 24, 24, W - 48, H - 48, 28);
+      g.stroke();
+
+      g.textBaseline = 'alphabetic';
+      g.fillStyle = t.accent;
+      g.font = font(34, 700);
+      g.fillText('AERO SENTRY', PAD, 104);
+      g.fillStyle = t.dim;
+      g.font = font(30);
+      g.textAlign = 'right';
+      g.fillText(new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }), W - PAD, 104);
+      g.textAlign = 'left';
+
+      // Photo (cover-cropped), or a radar motif when there isn't one.
+      const px = PAD, py = 136, pw = W - PAD * 2, ph = 460;
+      g.save();
+      cardRoundRect(g, px, py, pw, ph, 24);
+      g.clip();
+      if (photoImg) {
+        const scale = Math.max(pw / photoImg.naturalWidth, ph / photoImg.naturalHeight);
+        const dw = photoImg.naturalWidth * scale, dh = photoImg.naturalHeight * scale;
+        g.drawImage(photoImg, px + (pw - dw) / 2, py + (ph - dh) / 2, dw, dh);
+      } else {
+        g.fillStyle = t.card;
+        g.fillRect(px, py, pw, ph);
+        const cx = px + pw / 2, cy = py + ph / 2;
+        g.strokeStyle = accentRgba(0.28);
+        g.lineWidth = 2;
+        [70, 140, 210].forEach((r) => { g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke(); });
+        g.beginPath();
+        g.moveTo(cx - 240, cy); g.lineTo(cx + 240, cy);
+        g.moveTo(cx, cy - 215); g.lineTo(cx, cy + 215);
+        g.stroke();
+        g.fillStyle = t.accent;
+        g.textAlign = 'center';
+        g.font = font(120, 700);
+        g.fillText('\u2708\uFE0E', cx, cy + 40);
+        g.textAlign = 'left';
+      }
+      g.restore();
+      g.strokeStyle = t.border;
+      g.lineWidth = 3;
+      cardRoundRect(g, px, py, pw, ph, 24);
+      g.stroke();
+
+      // Identity
+      const callsign = (ac.flight || '').trim() || String(ac.hex).toUpperCase();
+      g.fillStyle = t.accent;
+      fit(callsign, W - PAD * 2, 128, 700);
+      g.fillText(callsign, PAD, 730);
+      g.fillStyle = t.dim;
+      g.font = font(36);
+      g.fillText([(ac.r || '').trim(), (ac.t || '').trim(), `ICAO ${String(ac.hex).toUpperCase()}`].filter(Boolean).join(' · '), PAD, 782);
+
+      // Tags: rare / special squawk
+      const tags = [];
+      const rare = classifyRare(ac);
+      if (rare) tags.push({ text: `\u2605 RARE · ${rare.label.toUpperCase()}`, color: '#ffb000' });
+      const decoded = describeSquawk(ac.squawk);
+      if (decoded && decoded.kind !== 'info') tags.push({ text: `${ac.squawk} · ${decoded.short}`, color: decoded.kind === 'alert' ? '#ff3333' : t.accent });
+      let tx = PAD;
+      tags.forEach((tag) => {
+        g.font = font(28, 700);
+        const tw = g.measureText(tag.text).width + 40;
+        if (tx + tw > W - PAD) return;
+        g.strokeStyle = tag.color;
+        g.lineWidth = 3;
+        cardRoundRect(g, tx, 812, tw, 52, 26);
+        g.stroke();
+        g.fillStyle = tag.color;
+        g.fillText(tag.text, tx + 20, 848);
+        tx += tw + 16;
+      });
+
+      // Route
+      const route = resolveFlightRoute((ac.flight || '').trim() || `ICAO: ${ac.hex}`, ac);
+      if (route) {
+        g.fillStyle = '#f2f7f4';
+        const routeText = `${route.fromCode} \u2192 ${route.toCode}`;
+        fit(routeText, W - PAD * 2, 76, 700);
+        g.fillText(routeText, PAD, 934);
+        g.fillStyle = t.dim;
+        const names = `${route.fromName || airportName(route.fromCode) || ''} \u2192 ${route.toName || airportName(route.toCode) || ''}`.trim();
+        fit(names, W - PAD * 2, 30);
+        g.fillText(names, PAD, 976);
+      } else {
+        g.fillStyle = t.dim;
+        g.font = font(34);
+        g.fillText('No verified route', PAD, 934);
+      }
+
+      // Stats
+      const hasPos = Number.isFinite(ac.lat) && Number.isFinite(ac.lon);
+      const vs = ac.baro_rate;
+      const stats = [
+        ['Altitude', typeof ac.alt_baro === 'number' ? fmtAlt(ac.alt_baro) : (ac.alt_baro === 'ground' ? 'On ground' : '--')],
+        ['Speed', Number.isFinite(ac.gs) ? fmtSpeed(ac.gs) : '--'],
+        ['Distance', hasPos ? fmtDist(calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon)) : '--'],
+        ['Heading', Number.isFinite(ac.track) ? `${Math.round(ac.track)}\u00B0 ${getCardinalFromDeg(ac.track)}` : '--'],
+        ['Vertical', !Number.isFinite(vs) ? '--' : (vs > 30 ? `\u25B2 ${fmtVRate(vs)}` : (vs < -30 ? `\u25BC ${fmtVRate(vs)}` : 'Level'))],
+        ['Squawk', ac.squawk ? String(ac.squawk) : '--']
+      ];
+      const gap = 24, cw = (W - PAD * 2 - gap * 2) / 3, ch = 112, gy = 1004;
+      stats.forEach(([label, value], i) => {
+        const x = PAD + (i % 3) * (cw + gap);
+        const y = gy + Math.floor(i / 3) * (ch + gap);
+        g.fillStyle = t.tint;
+        cardRoundRect(g, x, y, cw, ch, 16);
+        g.fill();
+        g.strokeStyle = t.border;
+        g.lineWidth = 2;
+        cardRoundRect(g, x, y, cw, ch, 16);
+        g.stroke();
+        g.fillStyle = t.dim;
+        g.font = font(22, 600);
+        g.fillText(label.toUpperCase(), x + 20, y + 38);
+        g.fillStyle = t.accent;
+        fit(value, cw - 40, 40, 700);
+        g.fillText(value, x + 20, y + 90);
+      });
+
+      g.fillStyle = t.dim;
+      g.font = font(28);
+      g.textAlign = 'center';
+      g.fillText(`${window.location.host || 'aero-sentry'} · live ADS-B radar`, W / 2, H - 46);
+      g.textAlign = 'left';
+      return c;
+    }
+
+    function canvasToBlob(canvas) {
+      return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/png'));
+    }
+
+    function aircraftShareText(ac) {
+      const callsign = (ac.flight || '').trim() || String(ac.hex).toUpperCase();
+      const bits = [];
+      if ((ac.t || '').trim()) bits.push((ac.t || '').trim());
+      if (Number.isFinite(ac.lat) && Number.isFinite(ac.lon)) bits.push(`${fmtDist(calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon))} away`);
+      if (typeof ac.alt_baro === 'number') bits.push(`at ${fmtAlt(ac.alt_baro)}`);
+      return `Spotted ${callsign}${bits.length ? ` (${bits.join(', ')})` : ''} on Aero Sentry`;
+    }
+
+    // Share sheet with the picture + link where the browser supports sharing files (iOS, Android),
+    // link-only share sheet where it doesn't, and a plain copy-to-clipboard as the desktop fallback.
+    // The picture is drawn synchronously from cached data so the tap's "user gesture" is still
+    // valid when navigator.share() is called - browsers reject share() after a long await.
+    async function shareSelectedAircraft() {
+      const ac = selectedSnapshot;
+      if (!ac) return;
+      const url = buildShareLink({ hex: ac.hex });
+      const text = aircraftShareText(ac);
+      const callsign = ((ac.flight || '').trim() || String(ac.hex)).replace(/[^A-Za-z0-9_-]/g, '') || 'aircraft';
+      let file = null;
+      try {
+        const blob = await canvasToBlob(drawAircraftShareCard(ac, sharePhotoImg));
+        if (blob) file = new File([blob], `${callsign}.png`, { type: 'image/png' });
+      } catch (e) { file = null; }
+      try {
+        if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: text, text: `${text}\n${url}` });
+          return;
+        }
+        if (navigator.share) {
+          await navigator.share({ title: text, text, url });
+          return;
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') return; // they closed the share sheet
+        console.warn('[SHARE] share sheet failed, falling back to copy:', err);
+      }
+      setShareStatus((await copyText(url)) ? 'Link copied' : 'Could not copy the link');
+    }
+
+    async function copySelectedAircraftLink() {
+      const ac = selectedSnapshot;
+      if (!ac) return;
+      const url = buildShareLink({ hex: ac.hex });
+      if (await copyText(url)) setShareStatus('Link copied');
+      else window.prompt('Copy this link', url);
+    }
+
     function adEl(tag, className, text) {
       const node = document.createElement(tag);
       if (className) node.className = className;
@@ -2857,6 +3540,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       selectedHex = ac.hex;
       selectedSnapshot = ac;
       selectedLostSince = 0;
+      sharePhotoImg = null;
       buildAircraftDetailPanel(ac);
       renderAircraftDetailLive();
       resetAircraftDetailIdleTimer();
@@ -2867,7 +3551,12 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         .then(() => { if (selectedHex === ac.hex) renderAircraftDetailLive(); })
         .catch((err) => console.warn('[DETAIL] route lookup failed:', err));
       resolveAircraftPhoto(ac)
-        .then((url) => { if (selectedHex === ac.hex) setAircraftDetailPhoto(url); })
+        .then((url) => {
+          if (selectedHex !== ac.hex) return null;
+          setAircraftDetailPhoto(url);
+          return loadShareImage(url);
+        })
+        .then((img) => { if (img && selectedHex === ac.hex) sharePhotoImg = img; })
         .catch(() => {});
 
       loadAircraftProfile(ac, false);
@@ -2879,6 +3568,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       selectedHex = null;
       selectedSnapshot = null;
       selectedLostSince = 0;
+      sharePhotoImg = null;
       clearTimeout(aircraftDetailIdleTimer);
       const panel = document.getElementById('aircraft-detail');
       if (panel) { panel.classList.add('hidden'); panel.textContent = ''; }
@@ -2924,8 +3614,12 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       callsign.id = 'ad-callsign';
       const sub = adEl('div', 'ad-sub');
       sub.id = 'ad-sub';
+      const tags = adEl('div', 'ad-tags');
+      tags.id = 'ad-tags';
+      tags.hidden = true;
       titles.appendChild(callsign);
       titles.appendChild(sub);
+      titles.appendChild(tags);
       const close = adEl('button', 'ad-close', '✕');
       close.type = 'button';
       close.setAttribute('aria-label', 'Close aircraft details');
@@ -2933,6 +3627,27 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       head.appendChild(titles);
       head.appendChild(close);
       panel.appendChild(head);
+
+      const actions = adEl('div', 'ad-actions');
+      const shareBtn = adEl('button', 'ad-btn', '⤴ Share');
+      shareBtn.type = 'button';
+      shareBtn.addEventListener('click', () => { resetAircraftDetailIdleTimer(); shareSelectedAircraft(); });
+      const copyBtn = adEl('button', 'ad-btn', '🔗 Copy link');
+      copyBtn.type = 'button';
+      copyBtn.addEventListener('click', () => { resetAircraftDetailIdleTimer(); copySelectedAircraftLink(); });
+      const atcLink = adEl('a', 'ad-btn');
+      atcLink.id = 'ad-atc';
+      atcLink.target = '_blank';
+      atcLink.rel = 'noopener noreferrer';
+      atcLink.hidden = true;
+      actions.appendChild(shareBtn);
+      actions.appendChild(copyBtn);
+      actions.appendChild(atcLink);
+      panel.appendChild(actions);
+      const shareStatus = adEl('div', 'ad-fine');
+      shareStatus.id = 'ad-share-status';
+      shareStatus.setAttribute('aria-live', 'polite');
+      panel.appendChild(shareStatus);
 
       const photo = adEl('div', 'ad-photo');
       photo.id = 'ad-photo';
@@ -2987,6 +3702,28 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       }
       adSetText('ad-sub', [reg, type, `ICAO ${String(ac.hex).toUpperCase()}`].filter(Boolean).join(' · '));
 
+      const tagsEl = document.getElementById('ad-tags');
+      if (tagsEl) {
+        tagsEl.textContent = '';
+        const rare = classifyRare(ac);
+        if (rare) tagsEl.appendChild(adEl('span', 'ad-tag rare', `★ Rare · ${rare.label}`));
+        const decodedTag = describeSquawk(ac.squawk);
+        if (decodedTag && decodedTag.kind === 'notable') tagsEl.appendChild(adEl('span', 'ad-tag', `${ac.squawk} · ${decodedTag.short}`));
+        tagsEl.hidden = !tagsEl.childNodes.length;
+      }
+
+      const atcEl = document.getElementById('ad-atc');
+      if (atcEl) {
+        const airfield = (settings.atcLinks && Number.isFinite(ac.lat) && Number.isFinite(ac.lon))
+          ? nearestAtcAirfield(ac.lat, ac.lon, isMilitary(ac)) : null;
+        atcEl.hidden = !airfield;
+        if (airfield) {
+          atcEl.href = liveAtcUrl(airfield.icao);
+          atcEl.textContent = `📻 ATC audio · ${airfield.icao}`;
+          atcEl.title = `Listen near ${airfield.name} (${fmtDist(airfield.distNM, 0)} from this aircraft) on LiveATC. Not every airfield has a feed.`;
+        }
+      }
+
       const lostEl = document.getElementById('ad-lost');
       if (lostEl) {
         lostEl.hidden = !selectedLostSince;
@@ -3009,19 +3746,21 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         if (hasPos) {
           const dist = calcDistanceNM(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
           const brg = calcBearing(userConfig.lat, userConfig.lon, ac.lat, ac.lon);
-          live.appendChild(adStat('Distance', `${dist.toFixed(1)} NM`, null));
+          live.appendChild(adStat('Distance', fmtDist(dist), null));
           live.appendChild(adStat('Bearing', `${brg}° ${getCardinalFromDeg(brg)}`, null));
         }
         const alt = ac.alt_baro;
-        live.appendChild(adStat('Altitude', typeof alt === 'number' ? `${Math.round(alt).toLocaleString('en-GB')} ft` : (alt === 'ground' ? 'On ground' : '--'), null));
-        live.appendChild(adStat('Speed', Number.isFinite(ac.gs) ? `${Math.round(ac.gs)} kts · ${Math.round(ac.gs * 1.15078)} mph` : '--', null));
+        live.appendChild(adStat('Altitude', typeof alt === 'number' ? fmtAlt(alt) : (alt === 'ground' ? 'On ground' : '--'), null));
+        live.appendChild(adStat('Speed', Number.isFinite(ac.gs) ? fmtSpeedBoth(ac.gs) : '--', null));
         live.appendChild(adStat('Heading', Number.isFinite(ac.track) ? `${Math.round(ac.track)}° ${getCardinalFromDeg(ac.track)}` : '--', null));
         const vs = ac.baro_rate;
-        if (Number.isFinite(vs) && vs > 30) live.appendChild(adStat('Vertical', `▲ +${Math.round(vs)} ft/min`, 'up'));
-        else if (Number.isFinite(vs) && vs < -30) live.appendChild(adStat('Vertical', `▼ ${Math.round(vs)} ft/min`, 'down'));
+        if (Number.isFinite(vs) && vs > 30) live.appendChild(adStat('Vertical', `▲ +${fmtVRate(vs)}`, 'up'));
+        else if (Number.isFinite(vs) && vs < -30) live.appendChild(adStat('Vertical', `▼ -${fmtVRate(vs)}`, 'down'));
         else live.appendChild(adStat('Vertical', Number.isFinite(vs) ? 'Level' : '--', null));
         const squawk = ac.squawk ? String(ac.squawk) : '';
-        live.appendChild(adStat('Squawk', squawk ? (SQUAWK_SHORT_LABELS[squawk] ? `${squawk} · ${SQUAWK_SHORT_LABELS[squawk]}` : squawk) : '--', isAlert ? 'alert' : null));
+        const decoded = squawk ? describeSquawk(squawk) : null;
+        live.appendChild(adStat('Squawk', squawk ? (decoded ? `${squawk} · ${decoded.short}` : squawk) : '--', isAlert ? 'alert' : null));
+        if (decoded && decoded.long && decoded.kind !== 'alert') live.appendChild(adEl('div', 'ad-note', decoded.long));
       }
 
       renderAircraftDetailRoute(ac, callsign);
@@ -3190,9 +3929,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const specs = [];
       if (str(info.engines)) specs.push(['Engines', str(info.engines)]);
       if (str(info.typical_capacity)) specs.push(['Capacity', str(info.typical_capacity)]);
-      if (num(info.cruise_speed_kts) !== null) specs.push(['Cruise', `${num(info.cruise_speed_kts).toLocaleString('en-GB')} kts`]);
-      if (num(info.range_nm) !== null) specs.push(['Range', `${num(info.range_nm).toLocaleString('en-GB')} NM`]);
-      if (num(info.service_ceiling_ft) !== null) specs.push(['Ceiling', `${num(info.service_ceiling_ft).toLocaleString('en-GB')} ft`]);
+      if (num(info.cruise_speed_kts) !== null) specs.push(['Cruise', fmtSpeed(num(info.cruise_speed_kts))]);
+      if (num(info.range_nm) !== null) specs.push(['Range', fmtDist(num(info.range_nm), 0)]);
+      if (num(info.service_ceiling_ft) !== null) specs.push(['Ceiling', fmtAlt(num(info.service_ceiling_ft))]);
       if (num(info.introduced_year) !== null) specs.push(['Introduced', String(num(info.introduced_year))]);
       if (specs.length) {
         const grid = adEl('div', 'ad-specs');
@@ -3388,6 +4127,113 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         if (e.key === 'Escape' && !dailySummaryPanelEl.classList.contains('hidden')) closeDailySummaryPanel();
       });
     }
+
+    // ---------------------------------------------------------------------
+    // Settings panel (the ⚙️ corner button)
+    // ---------------------------------------------------------------------
+    function updateRadiusTexts() {
+      const title = document.getElementById('mil-panel-title');
+      if (title) title.textContent = `Active Military Transponders Within ${fmtDist(userConfig.radiusNM, 0).replace(' ', '')}`;
+    }
+
+    // Re-renders everything that shows a unit or a theme colour right now, instead of waiting for
+    // the next poll to catch up.
+    function refreshForSettings() {
+      applyTheme();
+      updateRadiusTexts();
+      buildAltitudeLegend();
+      if (radarCircle) radarCircle.setStyle({ color: currentTheme().accent, fillColor: currentTheme().accent });
+      if (!feedStarted) return;
+      try {
+        renderStaticScopeLayer();
+        renderFlightBoard(liveAircraft);
+        updateNearestScrollboard(liveAircraft);
+        if (selectedHex) {
+          renderAircraftDetailLive();
+          renderAircraftDetailProfile();
+        }
+      } catch (err) {
+        console.warn('[SETTINGS] refresh after a change failed:', err);
+      }
+    }
+
+    function initSettingsPanel() {
+      const btn = document.getElementById('settings-btn');
+      const panel = document.getElementById('settings-panel');
+      const backdrop = document.getElementById('settings-backdrop');
+      const closeBtn = document.getElementById('settings-close');
+      const statusEl = document.getElementById('settings-status');
+      if (!btn || !panel || !backdrop || !closeBtn || !statusEl) return;
+
+      let statusTimer = null;
+      const say = (text) => {
+        statusEl.textContent = text || '';
+        clearTimeout(statusTimer);
+        if (text) statusTimer = setTimeout(() => { statusEl.textContent = ''; }, 4000);
+      };
+
+      function syncControls() {
+        panel.querySelectorAll('[data-setting]').forEach((seg) => {
+          seg.querySelectorAll('button[data-value]').forEach((b) => {
+            const on = b.dataset.value === settings[seg.dataset.setting];
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+          });
+        });
+        panel.querySelectorAll('input[data-toggle]').forEach((cb) => { cb.checked = !!settings[cb.dataset.toggle]; });
+      }
+      function openPanel() {
+        syncControls();
+        say('');
+        backdrop.hidden = false;
+        panel.hidden = false;
+        settingsOpen = true;
+      }
+      function closePanel() {
+        panel.hidden = true;
+        backdrop.hidden = true;
+        settingsOpen = false;
+      }
+
+      btn.addEventListener('click', () => (settingsOpen ? closePanel() : openPanel()));
+      closeBtn.addEventListener('click', closePanel);
+      backdrop.addEventListener('click', closePanel);
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && settingsOpen) closePanel(); });
+
+      panel.querySelectorAll('[data-setting]').forEach((seg) => {
+        seg.addEventListener('click', (e) => {
+          const b = e.target.closest('button[data-value]');
+          if (!b) return;
+          settings[seg.dataset.setting] = b.dataset.value;
+          saveSettings();
+          refreshForSettings();
+          syncControls();
+        });
+      });
+      panel.querySelectorAll('input[data-toggle]').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          settings[cb.dataset.toggle] = cb.checked;
+          saveSettings();
+          refreshForSettings();
+        });
+      });
+
+      document.getElementById('settings-copy-link').addEventListener('click', async () => {
+        const url = buildShareLink();
+        if (await copyText(url)) say(settings.shareLocation && getCookie(POSTCODE_COOKIE) ? 'Link copied (includes your postcode)' : 'Link copied');
+        else window.prompt('Copy this link', url);
+      });
+      document.getElementById('settings-reset').addEventListener('click', () => {
+        Object.assign(settings, SETTINGS_DEFAULTS);
+        saveSettings();
+        refreshForSettings();
+        syncControls();
+        say('Back to defaults');
+      });
+
+      updateRadiusTexts();
+    }
+    initSettingsPanel();
 
     // Unattended kiosk: the Pi's launcher (deploy/kiosk.sh) opens the page with ?autostart=1 so
     // it starts by itself instead of waiting for a tap. Normal visitors never see this - without
