@@ -5,6 +5,10 @@
 #   radar-tunnel.service  the Cloudflare tunnel named "radar", started after the server
 #   kiosk entry           opens the site full-screen in Chromium when the Pi's desktop logs in
 #                         (~/.config/autostart/radar-kiosk.desktop -> deploy/kiosk.sh)
+#   auto-update           radar-updater.timer checks GitHub every couple of minutes and pulls +
+#                         restarts radar.service on its own (deploy/auto-update.sh) - opt in with
+#                         the "autoupdate" command below, since it means the Pi runs whatever
+#                         gets pushed to the branch with no review step.
 #
 # Run it as your normal user (it calls sudo itself where needed):
 #
@@ -14,7 +18,8 @@
 #                                             same, but a dashboard-managed tunnel run by its token
 #   ./deploy/install-services.sh kiosk        ONLY (re)do the kiosk entry - touches no services,
 #                                             needs no sudo and no token
-#   ./deploy/install-services.sh uninstall    remove the services and the kiosk entry
+#   ./deploy/install-services.sh autoupdate   ONLY set up the auto-update timer (see below)
+#   ./deploy/install-services.sh uninstall    remove the services, kiosk entry and auto-update timer
 #
 # Aircraft-details panel (tap an aircraft -> Gemini profile): put the key in /etc/radar.env, which the
 # server unit reads if it exists (nothing here creates or touches it):
@@ -26,6 +31,8 @@
 #   KIOSK=0                       skip the kiosk entry during a full install
 #   KIOSK_URL                     what the kiosk opens (default https://aero-sentry.co.uk;
 #                                 http://localhost:10004 also works and doesn't need the internet)
+#   UPDATE_BRANCH (default main)  UPDATE_INTERVAL (default 2min, systemd time span syntax)
+#   RESTART_SERVICES (default radar.service) - space-separated units auto-update restarts
 #   DRY_RUN=1                     print what would be written, change nothing
 
 set -euo pipefail
@@ -35,10 +42,16 @@ TUNNEL_NAME="${TUNNEL_NAME:-radar}"
 DRY_RUN="${DRY_RUN:-0}"
 KIOSK="${KIOSK:-1}"
 KIOSK_URL="${KIOSK_URL:-https://aero-sentry.co.uk}"
+UPDATE_BRANCH="${UPDATE_BRANCH:-main}"
+UPDATE_INTERVAL="${UPDATE_INTERVAL:-2min}"
+RESTART_SERVICES="${RESTART_SERVICES:-radar.service}"
 
 SERVER_UNIT=/etc/systemd/system/radar.service
 TUNNEL_UNIT=/etc/systemd/system/radar-tunnel.service
 TOKEN_FILE=/etc/radar-tunnel.env
+UPDATER_SERVICE_UNIT=/etc/systemd/system/radar-updater.service
+UPDATER_TIMER_UNIT=/etc/systemd/system/radar-updater.timer
+UPDATER_SUDOERS=/etc/sudoers.d/radar-updater
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # this script lives in <repo>/deploy/
 RUN_USER="${SUDO_USER:-$(id -un)}"
@@ -222,6 +235,93 @@ install_kiosk() {
 }
 
 # =============================================================================================
+# Auto-update: radar-updater.timer checks GitHub every couple of minutes and, if the branch has
+# moved on, runs deploy/auto-update.sh (git reset --hard + restart radar.service). The timer runs
+# as your normal user - not root - so it can `git pull` into a checkout your user owns; the one
+# privileged step (restarting the service) is allowed without a password by a sudoers rule scoped
+# to exactly that one command, nothing broader.
+# =============================================================================================
+updater_service_unit() {
+  cat <<EOF
+[Unit]
+Description=Check $UPDATE_BRANCH for new radar commits and restart radar.service if there are any
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$RUN_USER
+WorkingDirectory=$REPO_DIR
+Environment=BRANCH=$UPDATE_BRANCH
+Environment=RESTART_SERVICES=$RESTART_SERVICES
+ExecStart=/usr/bin/env bash $REPO_DIR/deploy/auto-update.sh
+EOF
+}
+
+updater_timer_unit() {
+  cat <<EOF
+[Unit]
+Description=Periodically check for radar updates ($UPDATE_INTERVAL)
+
+[Timer]
+OnBootSec=$UPDATE_INTERVAL
+OnUnitActiveSec=$UPDATE_INTERVAL
+RandomizedDelaySec=15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+# Scoped to the exact restart command auto-update.sh runs - not "ALL", not a wildcard service
+# name - so this can't be used to run arbitrary commands as root.
+updater_sudoers() {
+  local svc
+  for svc in $RESTART_SERVICES; do
+    printf '%s ALL=(root) NOPASSWD: %s restart %s\n' "$RUN_USER" "$SYSTEMCTL_BIN" "$svc"
+  done
+}
+
+install_autoupdate() {
+  SYSTEMCTL_BIN="$(command -v systemctl || true)"
+  [ -n "$SYSTEMCTL_BIN" ] || die "systemctl not found - is this actually a systemd system?"
+  [ -f "$REPO_DIR/deploy/auto-update.sh" ] || die "missing $REPO_DIR/deploy/auto-update.sh"
+  git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "$REPO_DIR doesn't look like a git checkout - auto-update needs 'git pull' to work"
+
+  if [ "$DRY_RUN" = "1" ]; then
+    say "# (dry run) branch: $UPDATE_BRANCH, every $UPDATE_INTERVAL, restarts: $RESTART_SERVICES, user: $RUN_USER"
+    say; say "# ---- $UPDATER_SERVICE_UNIT"; updater_service_unit
+    say; say "# ---- $UPDATER_TIMER_UNIT"; updater_timer_unit
+    say; say "# ---- $UPDATER_SUDOERS (mode 440, root only)"; updater_sudoers
+    return 0
+  fi
+
+  chmod +x "$REPO_DIR/deploy/auto-update.sh"
+  updater_service_unit | sudo tee "$UPDATER_SERVICE_UNIT" >/dev/null
+  updater_timer_unit | sudo tee "$UPDATER_TIMER_UNIT" >/dev/null
+
+  # Written to a temp file and checked with visudo -c before it's installed anywhere sudo will
+  # read it from - a typo in a live /etc/sudoers.d file can lock out sudo entirely.
+  local tmp_sudoers
+  tmp_sudoers="$(mktemp)"
+  updater_sudoers > "$tmp_sudoers"
+  sudo visudo -cf "$tmp_sudoers" || { rm -f "$tmp_sudoers"; die "generated sudoers rule failed validation - not installing it"; }
+  sudo install -m 440 -o root -g root "$tmp_sudoers" "$UPDATER_SUDOERS"
+  rm -f "$tmp_sudoers"
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now radar-updater.timer
+
+  say
+  say "radar-updater.timer: $(systemctl is-active radar-updater.timer || true)  (checks every $UPDATE_INTERVAL)"
+  say "Run a check right now:  sudo systemctl start radar-updater.service"
+  say "Logs:                   journalctl -u radar-updater -e"
+  say "Disable without removing:  sudo systemctl disable --now radar-updater.timer"
+}
+
+# =============================================================================================
 # main
 # =============================================================================================
 case "${1:-install}" in
@@ -232,15 +332,18 @@ case "${1:-install}" in
   kiosk)
     install_kiosk strict
     ;;
+  autoupdate)
+    install_autoupdate
+    ;;
   uninstall)
     [ "$DRY_RUN" = "1" ] && die "uninstall doesn't support DRY_RUN"
-    sudo systemctl disable --now radar-tunnel.service radar.service 2>/dev/null || true
-    sudo rm -f "$SERVER_UNIT" "$TUNNEL_UNIT" "$TOKEN_FILE"
+    sudo systemctl disable --now radar-tunnel.service radar.service radar-updater.timer 2>/dev/null || true
+    sudo rm -f "$SERVER_UNIT" "$TUNNEL_UNIT" "$TOKEN_FILE" "$UPDATER_SERVICE_UNIT" "$UPDATER_TIMER_UNIT" "$UPDATER_SUDOERS"
     sudo systemctl daemon-reload
     run_as_user rm -f "$KIOSK_ENTRY"
-    say "Removed radar.service, radar-tunnel.service and the kiosk entry."
+    say "Removed radar.service, radar-tunnel.service, the auto-update timer and the kiosk entry."
     ;;
   *)
-    die "unknown command '$1' (use: install | kiosk | uninstall)"
+    die "unknown command '$1' (use: install | kiosk | autoupdate | uninstall)"
     ;;
 esac
