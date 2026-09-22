@@ -114,7 +114,12 @@ function serveStatic(req, res, pathname) {
       return;
     }
     const ext = path.extname(filePath).toLowerCase();
-    send(res, 200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' }, data);
+    // no-store (not just no-cache): there's no ETag/Last-Modified here for the browser to
+    // revalidate against, so "no-cache" alone would just have it keep a copy it never checks
+    // back on. no-store rules that out - every request for the page shell hits this server fresh.
+    // The service worker (sw.js) is the only layer that ever keeps a fallback copy, and it's
+    // network-first, so even that only gets used when this request itself fails outright.
+    send(res, 200, { 'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream', 'Cache-Control': 'no-store, no-cache, must-revalidate' }, data);
   });
 }
 

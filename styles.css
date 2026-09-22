@@ -105,13 +105,24 @@
       position: fixed;
       top: 0; left: 0;
       width: 100vw; height: 100vh; height: 100dvh;
-      background: rgba(1, 5, 2, 0.97);
+      background: rgb(1, 5, 2); /* fully opaque - unlike #start-overlay's 0.97, this is also shown
+        as the forced cookie-consent re-confirm (see PRIVACY_ACK_COOKIE in app.js), with a live,
+        populated radar behind it - not worth even a faint bleed-through here */
       z-index: 10001; /* above #start-overlay (10000) so it can be shown over/instead of it */
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       gap: 1rem;
+      /* The cookie notice can make this content taller than a short viewport (a phone in
+         landscape, a small window). Without this, the overflow spilled out past the fixed
+         100vh box - which only paints a background for its own height - and exposed the page
+         underneath instead of covering it, so it scrolls internally and stays fully opaque. */
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      touch-action: pan-y; /* the body is touch-action: none; this re-allows scrolling in here */
+      padding: 1.5rem 1rem;
+      box-sizing: border-box;
       /* No user-select: none here (the start overlay has it): on iOS Safari it can stop the
          postcode field inside from being typed into. */
     }
@@ -196,6 +207,21 @@
       max-width: 20rem;
       text-align: center;
     }
+
+    /* Cookie notice - see PRIVACY_ACK_COOKIE in app.js */
+    .postcode-privacy-note {
+      max-width: 20rem;
+      margin: 0;
+      font-size: 0.68rem;
+      line-height: 1.4;
+      color: var(--text-dim);
+      text-align: center;
+    }
+    .postcode-privacy-note a {
+      color: var(--text-dim);
+      text-decoration: underline;
+    }
+    .postcode-privacy-note a:hover { color: var(--accent-green); }
 
     #postcode-change-btn {
       position: fixed;

@@ -222,6 +222,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       return match ? decodeURIComponent(match[1]) : null;
     }
     const POSTCODE_COOKIE = 'radar_postcode';
+    // Bump the _v1 suffix (and update the note in the postcode overlay + about.html) if the
+    // cookie notice's wording ever changes materially - that's what re-forces everyone with a
+    // saved postcode through the overlay once, the same way this version did.
+    const PRIVACY_ACK_COOKIE = 'radar_privacy_ack_v1';
 
     // Shared by the URL-based override below, the saved-cookie lookup, and the manual
     // postcode-entry form - one place that actually talks to postcodes.io.
@@ -248,6 +252,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // go on - i.e. a genuine first visit. startFeed() checks this and shows the postcode-entry
     // overlay instead of proceeding, before ever touching the hardcoded default coordinates.
     let needsPostcodePrompt = false;
+    // True only when someone with an already-saved postcode is being made to see the cookie
+    // notice and re-confirm for the first time (see resolveStationCoords) - changes the overlay's
+    // wording so it's clear this isn't a first visit. False for an ordinary first visit or a
+    // manual "change location" tap.
+    let forcedReconsent = false;
 
     async function resolveStationCoords() {
       // ?pc= is what shared links use (see buildShareLink): unlike the old /radar/<postcode> path
@@ -269,6 +278,20 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
       const cookiePostcode = getCookie(POSTCODE_COOKIE);
       if (cookiePostcode) {
+        if (!getCookie(PRIVACY_ACK_COOKIE)) {
+          // Saved before the cookie notice existed. ?autostart=1 is the unattended kiosk display
+          // (deploy/kiosk.sh) - there's no one there to answer a prompt, so it keeps working as
+          // before rather than silently reverting to the hardcoded default; everyone else gets
+          // made to see the notice and re-confirm once (handlePostcodeSubmit sets this cookie,
+          // so it's only ever this one time per device).
+          if (new URLSearchParams(window.location.search).get('autostart') === '1') {
+            setCookie(PRIVACY_ACK_COOKIE, '1', 365);
+          } else {
+            forcedReconsent = true;
+            needsPostcodePrompt = true;
+            return;
+          }
+        }
         const result = await geocodePostcode(cookiePostcode);
         if (!result.error) {
           userConfig.lat = result.lat;
@@ -331,8 +354,17 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (!overlay) return;
       if (input) input.value = prefill || '';
       if (err) err.style.display = 'none';
+      const titleEl = document.getElementById('postcode-title');
+      const subEl = document.getElementById('postcode-sub');
+      if (titleEl) titleEl.textContent = forcedReconsent ? 'Confirm Your Location' : 'Set Your Location';
+      if (subEl) {
+        subEl.textContent = forcedReconsent
+          ? "We've updated how we explain the postcode cookie below - please confirm to carry on."
+          : 'Enter a UK postcode to centre the radar on your area';
+      }
       // Cancel is offered whenever a location is already set (the 📍 button); on a genuine first
-      // visit the prompt is mandatory, so no way out - hiding it there would leave a dead screen.
+      // visit - or this forced re-confirm - the prompt is mandatory, so no way out - hiding it
+      // there would leave a dead screen.
       const cancelBtn = document.getElementById('postcode-cancel');
       if (cancelBtn) cancelBtn.hidden = needsPostcodePrompt;
       overlay.classList.remove('hidden');
@@ -382,7 +414,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       }
 
       setCookie(POSTCODE_COOKIE, result.postcode, 365);
+      setCookie(PRIVACY_ACK_COOKIE, '1', 365);
       needsPostcodePrompt = false;
+      forcedReconsent = false;
       hidePostcodeOverlay();
 
       if (feedStarted) {
@@ -677,7 +711,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         startRequested = false;
         const overlay = document.getElementById('start-overlay');
         if (overlay) overlay.classList.add('hidden');
-        showPostcodeOverlay();
+        // forcedReconsent (set in resolveStationCoords) prefills the postcode they already had,
+        // so re-confirming is one tap, not real re-entry.
+        showPostcodeOverlay(forcedReconsent ? getCookie(POSTCODE_COOKIE) : '');
         return;
       }
 
@@ -4032,7 +4068,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     });
     const postcodeChangeBtn = document.getElementById('postcode-change-btn');
     if (postcodeChangeBtn) {
-      postcodeChangeBtn.addEventListener('click', () => showPostcodeOverlay(getCookie(POSTCODE_COOKIE) || '', true));
+      postcodeChangeBtn.addEventListener('click', () => { forcedReconsent = false; showPostcodeOverlay(getCookie(POSTCODE_COOKIE) || '', true); });
     }
     const dailySummaryBtn = document.getElementById('daily-summary-btn');
     if (dailySummaryBtn) dailySummaryBtn.addEventListener('click', openDailySummaryPanel);
