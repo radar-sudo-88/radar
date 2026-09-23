@@ -543,7 +543,8 @@ async function handleSimulate(req, res, url, cors) {
 //
 //   GEMINI_API_KEY=<key from https://aistudio.google.com/apikey>   (required - without it this
 //                                                                    route returns 503 not_configured)
-//   GEMINI_MODEL=gemini-3.1-flash-lite     (optional - e.g. gemini-3.8-flash for better accuracy)
+//   GEMINI_MODEL=gemini-3.1-flash-lite     (optional - tried first; the others in GEMINI_MODELS are fallbacks)
+//   GEMINI_MODELS=a,b,c                    (optional - full ordered fallback list, replaces the defaults)
 //   GEMINI_DAILY_LIMIT=500                 (optional - cap on billable Gemini calls per UTC day)
 //   GEMINI_API_BASE=...                    (optional - override the API host, used for testing)
 //
@@ -560,7 +561,22 @@ async function handleSimulate(req, res, url, cors) {
 //   - Results are cached 24h by type+operator (30 Ryanair 737s cost one call, not thirty), and
 //     only cache MISSES count against the per-IP rate limit and the daily cap.
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+// Models are tried in order: if one is overloaded (503), rate-limited (429), missing (404) or too
+// slow, the next is used. A model that just failed is skipped for a couple of minutes so requests
+// don't keep paying for it. GEMINI_MODELS=a,b,c overrides the whole list; GEMINI_MODEL=x just
+// puts x first. Names that don't exist are harmless (404 -> next model).
+const GEMINI_DEFAULT_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash'];
+const GEMINI_MODELS = (() => {
+  const listed = (process.env.GEMINI_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean);
+  if (listed.length) return [...new Set(listed)];
+  const first = (process.env.GEMINI_MODEL || '').trim();
+  return [...new Set([...(first ? [first] : []), ...GEMINI_DEFAULT_MODELS])];
+})();
+const GEMINI_MODEL = GEMINI_MODELS[0];   // primary
+let geminiLastModel = GEMINI_MODEL;      // model that most recently answered (for logs/replies)
+const geminiModelCooldown = new Map();   // model -> ms timestamp until which it's tried last
+const GEMINI_COOLDOWN_MS = 2 * 60 * 1000;
+const GEMINI_TOTAL_BUDGET_MS = 80000;    // whole request incl. all models; the page waits 90s
 const GEMINI_API_BASE = (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
 const GEMINI_DAILY_LIMIT = Number(process.env.GEMINI_DAILY_LIMIT) || 500;
 // Flash-Lite can take 10-15s+ on a Pi link even for tiny prompts, so allow plenty of headroom
@@ -712,8 +728,9 @@ function normaliseAircraftInfo(raw) {
 
 // --- Gemini call ---
 class AiError extends Error {
-  constructor(status, code, detail) {
+  constructor(status, code, detail, failover) {
     super(detail || code);
+    this.failover = !!failover; // true = worth trying the next model
     this.status = status; // HTTP status we send to OUR client
     this.code = code;     // stable machine-readable code the frontend maps to a message
   }
@@ -745,11 +762,11 @@ function buildGeminiBody(systemPrompt, prompt, schema, style) {
   };
 }
 
-async function postGemini(systemPrompt, prompt, schema, style) {
+async function postGemini(model, systemPrompt, prompt, schema, style, timeoutMs) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
+    const response = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -762,7 +779,7 @@ async function postGemini(systemPrompt, prompt, schema, style) {
     const text = await response.text();
     return { status: response.status, ok: response.ok, text };
   } catch (err) {
-    if (err.name === 'AbortError') throw new AiError(504, 'ai_timeout', 'Gemini request timed out');
+    if (err.name === 'AbortError') throw new AiError(504, 'ai_timeout', 'Gemini request timed out', true);
     throw new AiError(502, 'ai_unavailable', `Gemini request failed: ${err.message}`);
   } finally {
     clearTimeout(timer);
@@ -771,55 +788,80 @@ async function postGemini(systemPrompt, prompt, schema, style) {
 
 function extractGeminiJson(bodyText) {
   let data;
-  try { data = JSON.parse(bodyText); } catch { throw new AiError(502, 'ai_bad_response', 'Gemini returned a non-JSON envelope'); }
+  try { data = JSON.parse(bodyText); } catch { throw new AiError(502, 'ai_bad_response', 'Gemini returned a non-JSON envelope', true); }
   const candidate = data && Array.isArray(data.candidates) ? data.candidates[0] : null;
   if (!candidate) {
     const block = data && data.promptFeedback && data.promptFeedback.blockReason;
-    throw new AiError(502, 'ai_bad_response', `Gemini returned no candidate${block ? ` (blocked: ${block})` : ''}`);
+    throw new AiError(502, 'ai_bad_response', `Gemini returned no candidate${block ? ` (blocked: ${block})` : ''}`, true);
   }
   const parts = (candidate.content && candidate.content.parts) || [];
   // Skip "thought" parts (thinking models can return their reasoning alongside the answer).
   let text = parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim();
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  try { return JSON.parse(text); } catch { throw new AiError(502, 'ai_bad_response', 'Gemini reply was not valid JSON'); }
+  try { return JSON.parse(text); } catch { throw new AiError(502, 'ai_bad_response', 'Gemini reply was not valid JSON', true); }
 }
 
-// One Gemini call that returns parsed JSON. Shared by the aircraft profile and the daily summary.
-async function callGeminiJson(systemPrompt, prompt, schema, label) {
+// One model: try each request style, retrying Google's transient 5xx once. Throws AiError; its
+// .failover says whether a different model is worth trying.
+async function callGeminiModel(model, systemPrompt, prompt, schema, label, started) {
   const order = geminiRequestStyle
     ? [geminiRequestStyle, ...GEMINI_STYLES.filter((s) => s !== geminiRequestStyle)]
     : GEMINI_STYLES;
+  const timeLeft = () => Math.max(5000, Math.min(GEMINI_TIMEOUT_MS, GEMINI_TOTAL_BUDGET_MS - (Date.now() - started)));
   let result;
-  const started = Date.now();
   for (let i = 0; i < order.length; i++) {
-    // Google answers 500/502/503/504 ("model is overloaded / unavailable") when it's under load;
-    // that's transient, so retry the same request a couple of times with a short back-off
-    // (staying well inside the page's own timeout) before giving up.
     for (let attempt = 1; ; attempt++) {
-      result = await postGemini(systemPrompt, prompt, schema, order[i]);
-      if (result.ok || ![500, 502, 503, 504].includes(result.status) || attempt > 2 || Date.now() - started > 30000) break;
-      console.warn(`[GEMINI ${label}] HTTP ${result.status} from Google, retry ${attempt}/2 in ${attempt * 2}s`);
-      await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+      result = await postGemini(model, systemPrompt, prompt, schema, order[i], timeLeft());
+      // Google answers 500/502/503/504 ("model is overloaded / unavailable") under load: retry
+      // once shortly, then give up on this model.
+      if (result.ok || ![500, 502, 503, 504].includes(result.status) || attempt > 1 || Date.now() - started > 40000) break;
+      console.warn(`[GEMINI ${label}] ${model}: HTTP ${result.status} from Google, retrying in 2s`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     if (result.ok) {
       if (geminiRequestStyle !== order[i]) {
         console.log(`[GEMINI ${label}] using "${order[i]}" request style from now on`);
         geminiRequestStyle = order[i];
       }
-      break;
+      return extractGeminiJson(result.text);
     }
-    // A bad key / model / quota problem fails identically whatever the style, so don't retry those.
-    const isRequestShapeProblem = result.status === 400 && !/api[ _]?key|API_KEY_INVALID|permission|billing|quota/i.test(result.text);
-    console.warn(`[GEMINI ${label}] "${order[i]}" style got HTTP ${result.status}: ${result.text.slice(0, 500)}`);
+    // A bad key / quota / billing problem fails identically whatever the style or model.
+    const authLike = /api[ _]?key|API_KEY_INVALID|permission|billing|quota/i.test(result.text);
+    const isRequestShapeProblem = result.status === 400 && !authLike;
+    console.warn(`[GEMINI ${label}] ${model} "${order[i]}" style got HTTP ${result.status}: ${result.text.slice(0, 500)}`);
     if (!(isRequestShapeProblem && i < order.length - 1)) break;
   }
 
-  if (!result.ok) {
-    if (result.status === 429 || result.status === 503) throw new AiError(503, 'ai_busy', `Gemini ${result.status === 429 ? 'rate limited us' : 'is overloaded'}`);
-    if (result.status === 401 || result.status === 403 || result.status === 400) throw new AiError(502, 'ai_unavailable', `Gemini rejected the request (${result.status})`);
-    throw new AiError(502, 'ai_unavailable', `Gemini HTTP ${result.status}`);
+  const st = result.status;
+  if (st === 429 || st === 503) throw new AiError(503, 'ai_busy', `${model}: ${st === 429 ? 'rate limited' : 'overloaded'}`, true);
+  if (st === 401 || st === 403) throw new AiError(502, 'ai_unavailable', `Gemini rejected the request (${st})`, false);
+  if (st === 400) throw new AiError(502, 'ai_unavailable', `${model}: Gemini rejected the request (400)`, !/api[ _]?key|API_KEY_INVALID|permission|billing|quota/i.test(result.text));
+  throw new AiError(502, 'ai_unavailable', `${model}: Gemini HTTP ${st}`, true); // incl. 404 unknown model
+}
+
+// One Gemini call that returns parsed JSON, walking the model list. Shared by the aircraft
+// profile and the daily summary.
+async function callGeminiJson(systemPrompt, prompt, schema, label) {
+  const started = Date.now();
+  const now = started;
+  const ready = GEMINI_MODELS.filter((m) => (geminiModelCooldown.get(m) || 0) <= now);
+  const models = [...ready, ...GEMINI_MODELS.filter((m) => !ready.includes(m))];
+  let lastErr = null;
+  for (let m = 0; m < models.length; m++) {
+    if (m > 0 && Date.now() - started > GEMINI_TOTAL_BUDGET_MS - 8000) break; // out of time
+    try {
+      const json = await callGeminiModel(models[m], systemPrompt, prompt, schema, label, started);
+      geminiLastModel = models[m];
+      if (m > 0) console.log(`[GEMINI ${label}] answered by fallback model ${models[m]}`);
+      return json;
+    } catch (err) {
+      lastErr = err;
+      if (!(err instanceof AiError) || !err.failover) throw err;
+      geminiModelCooldown.set(models[m], Date.now() + GEMINI_COOLDOWN_MS);
+      console.warn(`[GEMINI ${label}] ${models[m]} failed (${err.code}: ${err.message})${m < models.length - 1 ? ', trying next model' : ''}`);
+    }
   }
-  return extractGeminiJson(result.text);
+  throw lastErr || new AiError(502, 'ai_unavailable', 'No Gemini model available');
 }
 
 async function fetchAircraftInfoFromGemini(id) {
@@ -880,7 +922,7 @@ async function handleAircraftInfo(req, res, cors) {
   const key = aircraftInfoCacheKey(id);
   const cached = aircraftInfoCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
-    reply(200, { ok: true, cached: true, model: GEMINI_MODEL, info: cached.info });
+    reply(200, { ok: true, cached: true, model: geminiLastModel, info: cached.info });
     return;
   }
 
@@ -895,7 +937,7 @@ async function handleAircraftInfo(req, res, cors) {
     geminiUsage.count += 1;
     const startedAt = Date.now();
     pending = fetchAircraftInfoFromGemini(id).then((info) => {
-      console.log(`[GEMINI] ${info ? 'ok' : 'no-result'} ${GEMINI_MODEL} ${Date.now() - startedAt}ms key="${key}" (${geminiUsage.count}/${GEMINI_DAILY_LIMIT} today)`);
+      console.log(`[GEMINI] ${info ? 'ok' : 'no-result'} ${geminiLastModel} ${Date.now() - startedAt}ms key="${key}" (${geminiUsage.count}/${GEMINI_DAILY_LIMIT} today)`);
       if (info) {
         if (aircraftInfoCache.size >= AIRCRAFT_INFO_CACHE_MAX) aircraftInfoCache.delete(aircraftInfoCache.keys().next().value); // oldest first
         aircraftInfoCache.set(key, { info, expiresAt: Date.now() + AIRCRAFT_INFO_CACHE_MS });
@@ -907,7 +949,7 @@ async function handleAircraftInfo(req, res, cors) {
 
   try {
     const info = await pending;
-    reply(200, { ok: true, cached: false, model: GEMINI_MODEL, info });
+    reply(200, { ok: true, cached: false, model: geminiLastModel, info });
   } catch (err) {
     if (err instanceof AiError) {
       console.warn(`[GEMINI] ${err.code}: ${err.message}`);
@@ -1043,7 +1085,7 @@ async function handleDailySummary(req, res, cors) {
 
   const cached = dailySummaryCache.get(day);
   if (cached && !force) {
-    reply(200, { ok: true, cached: true, model: GEMINI_MODEL, day, summary: cached.summary });
+    reply(200, { ok: true, cached: true, model: geminiLastModel, day, summary: cached.summary });
     return;
   }
   if (!entries.length) {
@@ -1073,8 +1115,8 @@ async function handleDailySummary(req, res, cors) {
     if (!summary) { reply(502, { ok: false, error: 'ai_bad_response' }); return; }
     if (dailySummaryCache.size >= DAILY_SUMMARY_CACHE_MAX) dailySummaryCache.delete(dailySummaryCache.keys().next().value);
     dailySummaryCache.set(day, { summary, expiresAt: Date.now() + msUntilNextUtcMidnight() });
-    console.log(`[GEMINI daily-summary] ok ${GEMINI_MODEL} day=${day} entries=${entries.length} (${geminiUsage.count}/${GEMINI_DAILY_LIMIT} today)`);
-    reply(200, { ok: true, cached: false, model: GEMINI_MODEL, day, summary });
+    console.log(`[GEMINI daily-summary] ok ${geminiLastModel} day=${day} entries=${entries.length} (${geminiUsage.count}/${GEMINI_DAILY_LIMIT} today)`);
+    reply(200, { ok: true, cached: false, model: geminiLastModel, day, summary });
   } catch (err) {
     if (err instanceof AiError) {
       console.warn(`[GEMINI daily-summary] ${err.code}: ${err.message}`);
@@ -1280,6 +1322,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Point-lookup upstream: ${ADSBFI_UPSTREAM}`);
   console.log(`Routeset upstream: ${ADSBLOL_ROUTESET_UPSTREAM}`);
   console.log(GEMINI_API_KEY
-    ? `Aircraft details: Gemini enabled (${GEMINI_MODEL}, ${GEMINI_DAILY_LIMIT}/day cap)`
+    ? `Aircraft details: Gemini enabled (${GEMINI_MODELS.join(' > ')}, ${GEMINI_DAILY_LIMIT}/day cap)`
     : 'Aircraft details: DISABLED - set GEMINI_API_KEY to enable POST /api/aircraft-info');
 });
