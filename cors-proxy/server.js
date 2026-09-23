@@ -719,23 +719,33 @@ class AiError extends Error {
   }
 }
 
-// Google has changed how structured output is requested (the current docs use
-// generationConfig.responseFormat.text.{mimeType,schema}; older/other SDK paths use
-// responseMimeType + responseJsonSchema). Try the current one first and, if the API rejects
-// the request shape itself, fall back to the older one and remember which worked.
-let geminiRequestStyle = 'responseFormat';
-function buildGeminiBody(prompt, style) {
-  const generationConfig = style === 'legacy'
-    ? { responseMimeType: 'application/json', responseJsonSchema: AIRCRAFT_INFO_SCHEMA }
-    : { responseFormat: { text: { mimeType: 'application/json', schema: AIRCRAFT_INFO_SCHEMA } } };
+// Structured-output request styles. Google has changed how this is requested more than once
+// (current docs: generationConfig.responseFormat.text.{mimeType,schema}; older: responseMimeType
+// + responseJsonSchema), and a schema feature the API doesn't like can 400 either one. So try
+// each style in order until one is accepted, remember the winner, and as a last resort ask for
+// JSON in plain prose ("promptOnly") - the reply is validated and clamped by normalise*() anyway.
+const GEMINI_STYLES = ['responseFormat', 'legacy', 'promptOnly'];
+let geminiRequestStyle = null; // null until a style has worked
+
+function buildGeminiBody(systemPrompt, prompt, schema, style) {
+  let generationConfig;
+  let userText = prompt;
+  if (style === 'legacy') {
+    generationConfig = { responseMimeType: 'application/json', responseJsonSchema: schema };
+  } else if (style === 'promptOnly') {
+    generationConfig = { responseMimeType: 'application/json' };
+    userText = `${prompt}\n\nReply with ONLY a JSON object that matches this JSON Schema (no markdown, no commentary):\n${JSON.stringify(schema)}`;
+  } else {
+    generationConfig = { responseFormat: { text: { mimeType: 'application/json', schema } } };
+  }
   return {
-    systemInstruction: { parts: [{ text: AIRCRAFT_SYSTEM_PROMPT }] },
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
     generationConfig: withThinking(generationConfig),
   };
 }
 
-async function postGemini(prompt, style) {
+async function postGemini(systemPrompt, prompt, schema, style) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
   try {
@@ -746,7 +756,7 @@ async function postGemini(prompt, style) {
         // Header, not ?key=, so the key can't end up in a URL that gets logged somewhere.
         'x-goog-api-key': GEMINI_API_KEY,
       },
-      body: JSON.stringify(buildGeminiBody(prompt, style)),
+      body: JSON.stringify(buildGeminiBody(systemPrompt, prompt, schema, style)),
       signal: controller.signal,
     });
     const text = await response.text();
@@ -774,33 +784,37 @@ function extractGeminiJson(bodyText) {
   try { return JSON.parse(text); } catch { throw new AiError(502, 'ai_bad_response', 'Gemini reply was not valid JSON'); }
 }
 
-async function fetchAircraftInfoFromGemini(id) {
-  const prompt = buildAircraftPrompt(id);
-  const styles = geminiRequestStyle === 'legacy' ? ['legacy'] : ['responseFormat', 'legacy'];
+// One Gemini call that returns parsed JSON. Shared by the aircraft profile and the daily summary.
+async function callGeminiJson(systemPrompt, prompt, schema, label) {
+  const order = geminiRequestStyle
+    ? [geminiRequestStyle, ...GEMINI_STYLES.filter((s) => s !== geminiRequestStyle)]
+    : GEMINI_STYLES;
   let result;
-  for (let i = 0; i < styles.length; i++) {
-    result = await postGemini(prompt, styles[i]);
+  for (let i = 0; i < order.length; i++) {
+    result = await postGemini(systemPrompt, prompt, schema, order[i]);
     if (result.ok) {
-      if (geminiRequestStyle !== styles[i]) {
-        console.log(`[GEMINI] using "${styles[i]}" structured-output request style from now on`);
-        geminiRequestStyle = styles[i];
+      if (geminiRequestStyle !== order[i]) {
+        console.log(`[GEMINI ${label}] using "${order[i]}" request style from now on`);
+        geminiRequestStyle = order[i];
       }
       break;
     }
-    // Only fall back when the 400 is about the request FIELDS (not, say, a bad API key, which
-    // is also a 400 from Google and would just fail identically on the second attempt).
-    const looksLikeShapeError = result.status === 400 && /responseFormat|response_format|responseJsonSchema|Unknown name|Invalid JSON payload/i.test(result.text);
-    if (!(looksLikeShapeError && i < styles.length - 1)) break;
-    console.warn(`[GEMINI] "${styles[i]}" request style rejected, retrying with "${styles[i + 1]}"`);
+    // A bad key / model / quota problem fails identically whatever the style, so don't retry those.
+    const isRequestShapeProblem = result.status === 400 && !/api[ _]?key|API_KEY_INVALID|permission|billing|quota/i.test(result.text);
+    console.warn(`[GEMINI ${label}] "${order[i]}" style got HTTP ${result.status}: ${result.text.slice(0, 500)}`);
+    if (!(isRequestShapeProblem && i < order.length - 1)) break;
   }
 
   if (!result.ok) {
-    console.error(`[GEMINI] HTTP ${result.status}: ${result.text.slice(0, 300)}`);
     if (result.status === 429) throw new AiError(503, 'ai_busy', 'Gemini rate limited us');
     if (result.status === 401 || result.status === 403 || result.status === 400) throw new AiError(502, 'ai_unavailable', `Gemini rejected the request (${result.status})`);
     throw new AiError(502, 'ai_unavailable', `Gemini HTTP ${result.status}`);
   }
-  return normaliseAircraftInfo(extractGeminiJson(result.text));
+  return extractGeminiJson(result.text);
+}
+
+async function fetchAircraftInfoFromGemini(id) {
+  return normaliseAircraftInfo(await callGeminiJson(AIRCRAFT_SYSTEM_PROMPT, buildAircraftPrompt(id), AIRCRAFT_INFO_SCHEMA, 'aircraft'));
 }
 
 // --- Cache, in-flight de-duplication, rate limits ---
@@ -989,38 +1003,7 @@ function normaliseDailySummary(raw) {
 }
 
 async function fetchDailySummaryFromGemini(agg) {
-  const prompt = buildDailySummaryPrompt(agg);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
-  try {
-    const style = geminiRequestStyle;
-    const generationConfig = style === 'legacy'
-      ? { responseMimeType: 'application/json', responseJsonSchema: DAILY_SUMMARY_SCHEMA }
-      : { responseFormat: { text: { mimeType: 'application/json', schema: DAILY_SUMMARY_SCHEMA } } };
-    const response = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: DAILY_SUMMARY_SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: withThinking(generationConfig),
-      }),
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      console.error(`[GEMINI daily-summary] HTTP ${response.status}: ${text.slice(0, 300)}`);
-      if (response.status === 429) throw new AiError(503, 'ai_busy', 'Gemini rate limited us');
-      throw new AiError(502, 'ai_unavailable', `Gemini HTTP ${response.status}`);
-    }
-    return normaliseDailySummary(extractGeminiJson(text));
-  } catch (err) {
-    if (err instanceof AiError) throw err;
-    if (err.name === 'AbortError') throw new AiError(504, 'ai_timeout', 'Gemini request timed out');
-    throw new AiError(502, 'ai_unavailable', `Gemini request failed: ${err.message}`);
-  } finally {
-    clearTimeout(timer);
-  }
+  return normaliseDailySummary(await callGeminiJson(DAILY_SUMMARY_SYSTEM_PROMPT, buildDailySummaryPrompt(agg), DAILY_SUMMARY_SCHEMA, 'daily-summary'));
 }
 
 const dailySummaryCache = new Map(); // utcDateString -> { summary, expiresAt }
