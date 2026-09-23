@@ -3030,7 +3030,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // Everything shown in the panel is written with textContent, never innerHTML: callsigns are
     // broadcast over radio and the profile is model output, so neither is trusted as markup.
     const AIRCRAFT_INFO_PATH_CLIENT = '/api/aircraft-info';
-    const AIRCRAFT_INFO_TIMEOUT_MS = 25000;
+    const AIRCRAFT_INFO_TIMEOUT_MS = 55000;
     // A wall board shouldn't be left with a panel covering the scope, so it closes itself after
     // a couple of minutes without interaction, or once the aircraft has been gone a minute.
     const AIRCRAFT_DETAIL_IDLE_MS = 120000;
@@ -3980,7 +3980,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // day too, so re-opening the panel later the same day doesn't re-request anything.
     const DAILY_SUMMARY_PATH_CLIENT = '/api/daily-summary';
     const DAILY_SUMMARY_CACHE_PREFIX = 'radarDailySummary:';
-    const DAILY_SUMMARY_TIMEOUT_MS = 25000;
+    const DAILY_SUMMARY_TIMEOUT_MS = 55000;
     let dailySummaryLoading = false;
 
     function loadCachedDailySummary() {

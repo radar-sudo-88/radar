@@ -563,7 +563,14 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 const GEMINI_API_BASE = (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
 const GEMINI_DAILY_LIMIT = Number(process.env.GEMINI_DAILY_LIMIT) || 500;
-const GEMINI_TIMEOUT_MS = 20000;
+// Flash-Lite can take 10-15s+ on a Pi link even for tiny prompts, so allow plenty of headroom
+// (the page's own timeouts in app.js must stay a bit above this).
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 45000;
+// Optional: GEMINI_THINKING_LEVEL=minimal (or low/medium/high) to cut latency on Gemini 3 models.
+const GEMINI_THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || null;
+function withThinking(generationConfig) {
+  return GEMINI_THINKING_LEVEL ? { ...generationConfig, thinkingConfig: { thinkingLevel: GEMINI_THINKING_LEVEL } } : generationConfig;
+}
 const AIRCRAFT_INFO_PATH = '/api/aircraft-info';
 const AIRCRAFT_INFO_MAX_BODY_BYTES = 8 * 1024; // a real request is a few hundred bytes
 const AIRCRAFT_INFO_CACHE_MS = 24 * 60 * 60 * 1000;
@@ -724,7 +731,7 @@ function buildGeminiBody(prompt, style) {
   return {
     systemInstruction: { parts: [{ text: AIRCRAFT_SYSTEM_PROMPT }] },
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig,
+    generationConfig: withThinking(generationConfig),
   };
 }
 
@@ -996,7 +1003,7 @@ async function fetchDailySummaryFromGemini(agg) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: DAILY_SUMMARY_SYSTEM_PROMPT }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig,
+        generationConfig: withThinking(generationConfig),
       }),
       signal: controller.signal,
     });
