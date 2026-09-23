@@ -703,7 +703,15 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           ctx.lineCap = 'round';
           ctx.fillStyle = colorHex;
           ctx.strokeStyle = '#050505';
-          ctx.lineWidth = 0.9 / s;
+          // In viewBox units directly (NOT divided by s) so the stroke scales together
+          // with the shape, the same way the fill does. This intentionally stays close to
+          // the original artwork's own ~0.26-unit stroke convention rather than the old
+          // vector shapes' much bolder one: those vector shapes only ever drew thick solid
+          // regions (e.g. a filled ellipse for a rotor disc), but this real artwork has
+          // genuinely thin parts (rotor blades, struts, antennas) - a thick fixed-pixel
+          // stroke completely swallows the colored fill on those and the icon reads as a
+          // solid black blob instead of a coloured aircraft (this is what was happening).
+          ctx.lineWidth = 0.32;
           ctx.shadowBlur = 0;
           ctx.fill(resolved.path);
           ctx.stroke(resolved.path);
