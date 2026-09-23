@@ -790,8 +790,17 @@ async function callGeminiJson(systemPrompt, prompt, schema, label) {
     ? [geminiRequestStyle, ...GEMINI_STYLES.filter((s) => s !== geminiRequestStyle)]
     : GEMINI_STYLES;
   let result;
+  const started = Date.now();
   for (let i = 0; i < order.length; i++) {
-    result = await postGemini(systemPrompt, prompt, schema, order[i]);
+    // Google answers 500/502/503/504 ("model is overloaded / unavailable") when it's under load;
+    // that's transient, so retry the same request a couple of times with a short back-off
+    // (staying well inside the page's own timeout) before giving up.
+    for (let attempt = 1; ; attempt++) {
+      result = await postGemini(systemPrompt, prompt, schema, order[i]);
+      if (result.ok || ![500, 502, 503, 504].includes(result.status) || attempt > 2 || Date.now() - started > 30000) break;
+      console.warn(`[GEMINI ${label}] HTTP ${result.status} from Google, retry ${attempt}/2 in ${attempt * 2}s`);
+      await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+    }
     if (result.ok) {
       if (geminiRequestStyle !== order[i]) {
         console.log(`[GEMINI ${label}] using "${order[i]}" request style from now on`);
@@ -806,7 +815,7 @@ async function callGeminiJson(systemPrompt, prompt, schema, label) {
   }
 
   if (!result.ok) {
-    if (result.status === 429) throw new AiError(503, 'ai_busy', 'Gemini rate limited us');
+    if (result.status === 429 || result.status === 503) throw new AiError(503, 'ai_busy', `Gemini ${result.status === 429 ? 'rate limited us' : 'is overloaded'}`);
     if (result.status === 401 || result.status === 403 || result.status === 400) throw new AiError(502, 'ai_unavailable', `Gemini rejected the request (${result.status})`);
     throw new AiError(502, 'ai_unavailable', `Gemini HTTP ${result.status}`);
   }
