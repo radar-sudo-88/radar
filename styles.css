@@ -1260,3 +1260,34 @@
     .ad-btn:hover { border-color: var(--accent-green); }
     .ad-btn[hidden] { display: none; }
     .ad-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.62rem; line-height: 1.3; }
+
+    /* Follow mode chip: shown while the scope is locked onto a followed aircraft. */
+    #follow-chip {
+      position: fixed;
+      bottom: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10004;
+      max-width: calc(100vw - 1.5rem);
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.4rem 0.5rem 0.4rem 0.9rem;
+      background: rgba(2, 8, 4, 0.92);
+      border: 1px solid var(--accent-green);
+      border-radius: 999px;
+      color: var(--accent-green);
+      font: inherit;
+      font-size: 0.75rem;
+    }
+    #follow-chip.lost { border-color: var(--accent-military); color: var(--accent-military); }
+    #follow-chip button {
+      min-height: 1.8rem;
+      padding: 0.2rem 0.8rem;
+      background: transparent;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }

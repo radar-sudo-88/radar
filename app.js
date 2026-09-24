@@ -329,6 +329,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // to call before the map exists yet (first-visit prompt, before startFeed() has run) - it
     // just updates userConfig in that case, and initMap() picks up the new values when it runs.
     function recenterStation(lat, lon) {
+      // Picking a new home location ends any follow in progress (without recentring twice).
+      if (followHex) { followHex = null; followHome = null; followLastSeen = null; followLostSince = 0; updateFollowChip(); }
       userConfig.lat = lat;
       userConfig.lon = lon;
       if (map && radarCircle) {
@@ -442,6 +444,14 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     let selectedHex = null;
     let selectedSnapshot = null;
     let selectedLostSince = 0;
+    // Follow mode: while followHex is set, the scope (userConfig.lat/lon, the radius circle and
+    // the map) is re-centred on that aircraft after every poll, so the radius travels with it.
+    // followHome remembers the station centre to return to when following stops.
+    let followHex = null;
+    let followHome = null;
+    let followLostSince = 0;
+    let followLastSeen = null;
+    const FOLLOW_LOST_MS = 90000;
     let isFetching = false;
     let radarCircle = null;
     let pollBackoffUntil = 0;
@@ -2182,7 +2192,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // existed to route around CORS and around each individual proxy's own
       // uptime, both of which are no longer client-side problems now that the
       // backend is self-hosted and does the resilience work itself.
-      const url = `${WORKER_URL}/v2/point/${userConfig.lat}/${userConfig.lon}/${userConfig.radiusNM}`;
+      // While following, round the centre to 0.01 deg (~0.6 NM, negligible against the 35 NM
+      // radius) so several viewers following nearby aircraft can share the backend's cache.
+      const qLat = followHex ? userConfig.lat.toFixed(2) : userConfig.lat;
+      const qLon = followHex ? userConfig.lon.toFixed(2) : userConfig.lon;
+      const url = `${WORKER_URL}/v2/point/${qLat}/${qLon}/${userConfig.radiusNM}`;
       let success = false;
       let sawRateLimit = false;
 
@@ -2317,12 +2331,14 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     function updateUIState(isConnected) {
       if (isConnected) {
+        applyFollow();
         renderFlightBoard(liveAircraft);
         updateNearestScrollboard(liveAircraft);
         checkRareAircraft(liveAircraft);
         checkLinkedAircraft();
         refreshAircraftDetail();
-        recordDailyLogEntries(liveAircraft);
+        // Sightings from a followed aircraft's remote area aren't 'today at home'.
+        if (!followHex) recordDailyLogEntries(liveAircraft);
       }
     }
 
@@ -3621,6 +3637,78 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (panel) { panel.classList.add('hidden'); panel.textContent = ''; }
     }
 
+    // --- Follow mode ---------------------------------------------------------------------
+    function startFollow(ac) {
+      if (!ac || !ac.hex) return;
+      if (!followHex) followHome = { lat: userConfig.lat, lon: userConfig.lon };
+      followHex = ac.hex;
+      followLastSeen = ac;
+      followLostSince = 0;
+      updateFollowChip();
+      applyFollow();
+      scheduleAircraftPoll(0);
+    }
+
+    function stopFollow() {
+      if (!followHex) return;
+      const home = followHome;
+      followHex = null;
+      followHome = null;
+      followLastSeen = null;
+      followLostSince = 0;
+      updateFollowChip();
+      if (home) recenterStation(home.lat, home.lon);
+      scheduleAircraftPoll(0);
+    }
+
+    // Called after every successful poll. Moves the scope centre to the followed aircraft's
+    // latest position; if it drops out of the feed, holds the last known centre and gives up
+    // (returning home) after FOLLOW_LOST_MS.
+    function applyFollow() {
+      if (!followHex) return;
+      const live = liveAircraft.find((a) => a.hex === followHex && a.lat && a.lon);
+      if (live) {
+        followLostSince = 0;
+        followLastSeen = live;
+        userConfig.lat = live.lat;
+        userConfig.lon = live.lon;
+        if (map && radarCircle) {
+          radarCircle.setLatLng([live.lat, live.lon]);
+          map.panTo([live.lat, live.lon], { animate: true, duration: AIRCRAFT_POLL_MS / 1000, easeLinearity: 1, noMoveStart: true });
+          recomputeMapProjectionCache();
+          recomputeAircraftPixelCache();
+        }
+      } else {
+        if (!followLostSince) followLostSince = Date.now();
+        if (Date.now() - followLostSince > FOLLOW_LOST_MS) { stopFollow(); return; }
+      }
+      updateFollowChip();
+    }
+
+    function updateFollowChip() {
+      let chip = document.getElementById('follow-chip');
+      if (!followHex) { if (chip) chip.remove(); return; }
+      if (!chip) {
+        chip = document.createElement('div');
+        chip.id = 'follow-chip';
+        const label = document.createElement('span');
+        label.id = 'follow-chip-label';
+        const stop = document.createElement('button');
+        stop.type = 'button';
+        stop.textContent = 'Stop';
+        stop.setAttribute('aria-label', 'Stop following aircraft');
+        stop.addEventListener('click', stopFollow);
+        chip.appendChild(label);
+        chip.appendChild(stop);
+        document.body.appendChild(chip);
+      }
+      const ac = followLastSeen || {};
+      const name = (ac.flight || '').trim() || (ac.r || '').trim() || String(followHex).toUpperCase();
+      const label = document.getElementById('follow-chip-label');
+      if (label) label.textContent = followLostSince ? `\u{1F3AF} ${name} - signal lost, holding position` : `\u{1F3AF} Following ${name}`;
+      chip.classList.toggle('lost', !!followLostSince);
+    }
+
     // Called after every successful poll (see updateUIState).
     function refreshAircraftDetail() {
       if (!selectedHex) return;
@@ -3682,6 +3770,14 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const copyBtn = adEl('button', 'ad-btn', '🔗 Copy link');
       copyBtn.type = 'button';
       copyBtn.addEventListener('click', () => { resetAircraftDetailIdleTimer(); copySelectedAircraftLink(); });
+      const followBtn = adEl('button', 'ad-btn ad-follow', ac.hex === followHex ? '\u23F9 Stop following' : '\u{1F3AF} Follow');
+      followBtn.type = 'button';
+      followBtn.addEventListener('click', () => {
+        resetAircraftDetailIdleTimer();
+        if (followHex === ac.hex) { stopFollow(); followBtn.textContent = '\u{1F3AF} Follow'; }
+        else { startFollow(selectedSnapshot || ac); followBtn.textContent = '\u23F9 Stop following'; }
+      });
+      actions.appendChild(followBtn);
       actions.appendChild(shareBtn);
       actions.appendChild(copyBtn);
       panel.appendChild(actions);
