@@ -144,6 +144,37 @@ function isAllowedOrigin(origin) {
   if (ALLOWED_ORIGINS.includes(origin)) return true;
   return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
 }
+// Optional static aircraft metadata (registration/manufacturer/model/built/operator), built from
+// the OpenSky aircraft database by aircraft-db/build.js. If it hasn't been built yet, the
+// /v2/aircraft-info route below just 404s per-hex instead of failing to start - this file is
+// large (tens of MB) and regenerable, so it's gitignored rather than committed.
+const AIRCRAFT_DB_PATH = path.join(__dirname, 'aircraft-db', 'lookup.json');
+let aircraftDb = null;
+try {
+  aircraftDb = JSON.parse(fs.readFileSync(AIRCRAFT_DB_PATH, 'utf8'));
+  console.log(`Loaded aircraft-info lookup: ${Object.keys(aircraftDb).length} aircraft (${AIRCRAFT_DB_PATH})`);
+} catch (err) {
+  console.warn(`Aircraft-info lookup not loaded (${err.code === 'ENOENT' ? 'not built yet' : err.message}) - ` +
+    `run 'node aircraft-db/build.js <csv>' to enable GET /v2/aircraft-info/<hex>.`);
+}
+const AIRCRAFT_DB_PATH_RE = /^\/v2\/aircraft-info\/([0-9a-fA-F]{6})$/;
+
+function handleAircraftDbLookup(req, res, url, cors) {
+  const match = url.pathname.match(AIRCRAFT_DB_PATH_RE);
+  const hex = match[1].toLowerCase();
+  if (!aircraftDb) {
+    send(res, 503, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'aircraft_db_not_built' }));
+    return;
+  }
+  const rec = aircraftDb[hex];
+  if (!rec) {
+    send(res, 404, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'not_found' }));
+    return;
+  }
+  // Cacheable for a long time client-side too - this data barely ever changes.
+  send(res, 200, { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=2592000' }, JSON.stringify(rec));
+}
+
 const ADSBFI_UPSTREAM = 'https://opendata.adsb.fi';
 const ADSBLOL_ROUTESET_UPSTREAM = 'https://api.adsb.lol/api/0/routeset';
 const CACHE_SECONDS = 2;
@@ -1244,6 +1275,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && POINT_PATH_RE.test(url.pathname)) {
       await handlePointLookup(req, res, url, cors);
+      return;
+    }
+
+    if (req.method === 'GET' && AIRCRAFT_DB_PATH_RE.test(url.pathname)) {
+      handleAircraftDbLookup(req, res, url, cors);
       return;
     }
 
