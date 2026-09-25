@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-tools</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #0b0d0f; color: #d7dde3; font-size: 14px;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    padding: 0.6rem 1rem; background: #14181c; border-bottom: 1px solid #262c33;
+    display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+  }
+  header h1 { font-size: 0.95rem; margin: 0; color: #6fe08a; }
+  header .root { color: #7d8894; font-size: 0.8rem; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #files { width: 320px; min-width: 220px; border-right: 1px solid #262c33; display: flex; flex-direction: column; }
+  #breadcrumb { padding: 0.5rem 0.7rem; border-bottom: 1px solid #262c33; font-size: 0.8rem; color: #9aa5b1; word-break: break-all; }
+  #breadcrumb button { background: none; border: none; color: #6fe08a; cursor: pointer; font: inherit; padding: 0; }
+  #entries { flex: 1; overflow-y: auto; }
+  .entry { padding: 0.4rem 0.7rem; cursor: pointer; display: flex; justify-content: space-between; gap: 0.5rem; white-space: nowrap; overflow: hidden; }
+  .entry:hover { background: #1b2127; }
+  .entry .name { overflow: hidden; text-overflow: ellipsis; }
+  .entry.dir .name::before { content: "\1F4C1 "; }
+  .entry.file .name::before { content: "\1F4C4 "; }
+  .entry .size { color: #6b7684; font-size: 0.75rem; flex-shrink: 0; }
+  .entry .del { color: #d76a6a; opacity: 0; flex-shrink: 0; }
+  .entry:hover .del { opacity: 1; }
+  #right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .tabs { display: flex; border-bottom: 1px solid #262c33; }
+  .tab { padding: 0.55rem 1rem; cursor: pointer; color: #7d8894; border-bottom: 2px solid transparent; }
+  .tab.active { color: #6fe08a; border-color: #6fe08a; }
+  .pane { flex: 1; display: none; min-height: 0; flex-direction: column; }
+  .pane.active { display: flex; }
+  #editorPath { padding: 0.5rem 0.8rem; color: #9aa5b1; font-size: 0.8rem; border-bottom: 1px solid #262c33; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+  #editorPath button { background: #1e2530; border: 1px solid #333c47; color: #6fe08a; border-radius: 4px; padding: 0.3rem 0.7rem; cursor: pointer; font: inherit; }
+  #editor { flex: 1; width: 100%; background: #0b0d0f; color: #d7dde3; border: none; resize: none; padding: 0.8rem; font: inherit; outline: none; }
+  #termCwdRow { display: flex; gap: 0.5rem; padding: 0.6rem 0.8rem; border-bottom: 1px solid #262c33; align-items: center; }
+  #termCwdRow input { flex: 1; background: #14181c; border: 1px solid #262c33; color: #d7dde3; padding: 0.4rem 0.6rem; border-radius: 4px; font: inherit; }
+  #cmdRow { display: flex; gap: 0.5rem; padding: 0.6rem 0.8rem; border-bottom: 1px solid #262c33; }
+  #cmdInput { flex: 1; background: #14181c; border: 1px solid #262c33; color: #d7dde3; padding: 0.5rem 0.7rem; border-radius: 4px; font: inherit; }
+  button.run { background: #1c3a26; border: 1px solid #2f6b45; color: #6fe08a; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.run:disabled { opacity: 0.5; cursor: default; }
+  #output { flex: 1; overflow-y: auto; padding: 0.8rem; white-space: pre-wrap; word-break: break-word; }
+  #output .cmdline { color: #6fe08a; margin-top: 0.6rem; }
+  #output .stderr { color: #e08a8a; }
+  #output .meta { color: #6b7684; font-size: 0.78rem; }
+  #msg { padding: 0.4rem 1rem; font-size: 0.8rem; }
+  #msg.error { color: #e08a8a; }
+  #msg.ok { color: #6fe08a; }
+  .empty { padding: 1rem; color: #6b7684; }
+</style>
+</head>
+<body>
+<header>
+  <h1>pi-tools</h1>
+  <span class="root" id="rootLabel"></span>
+</header>
+<div id="msg"></div>
+<main>
+  <div id="files">
+    <div id="breadcrumb"></div>
+    <div id="entries"></div>
+  </div>
+  <div id="right">
+    <div class="tabs">
+      <div class="tab active" data-tab="editor">Editor</div>
+      <div class="tab" data-tab="terminal">Terminal</div>
+    </div>
+    <div class="pane active" id="pane-editor">
+      <div id="editorPath"><span id="editorPathLabel">No file open</span><button id="saveBtn" disabled>Save</button></div>
+      <textarea id="editor" spellcheck="false" placeholder="Select a file to view or edit it here."></textarea>
+    </div>
+    <div class="pane" id="pane-terminal">
+      <div id="termCwdRow">
+        <span style="color:#7d8894">cwd:</span>
+        <input id="termCwd" value=".">
+      </div>
+      <div id="cmdRow">
+        <input id="cmdInput" placeholder="e.g. git pull && sudo systemctl restart radar" autocomplete="off">
+        <button class="run" id="runBtn">Run</button>
+      </div>
+      <div id="output"></div>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  let TOKEN = localStorage.getItem('pi-tools-token') || '';
+  let currentDir = '.';
+  let currentFile = null;
+
+  function headers(extra) {
+    const h = Object.assign({}, extra || {});
+    if (TOKEN) h['X-Auth-Token'] = TOKEN;
+    return h;
+  }
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({}, opts, { headers: headers((opts && opts.headers) || (opts && opts.json ? { 'Content-Type': 'application/json' } : {})) }));
+    if (res.status === 401) {
+      const t = prompt('Enter pi-tools token:');
+      if (t) { TOKEN = t; localStorage.setItem('pi-tools-token', t); return api(path, opts); }
+      throw new Error('Unauthorized');
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+
+  function showMsg(text, cls) {
+    const el = document.getElementById('msg');
+    el.textContent = text || '';
+    el.className = cls || '';
+    if (text) setTimeout(() => { if (el.textContent === text) { el.textContent = ''; el.className = ''; } }, 4000);
+  }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  async function loadDir(rel) {
+    try {
+      const data = await api('/api/list?path=' + encodeURIComponent(rel));
+      currentDir = data.path;
+      document.getElementById('rootLabel').textContent = data.root;
+      renderBreadcrumb();
+      renderEntries(data.entries);
+      document.getElementById('termCwd').value = currentDir;
+    } catch (err) { showMsg(err.message, 'error'); }
+  }
+
+  function renderBreadcrumb() {
+    const box = document.getElementById('breadcrumb');
+    box.textContent = '';
+    const parts = currentDir === '.' ? [] : currentDir.split('/');
+    const rootBtn = document.createElement('button');
+    rootBtn.textContent = '/';
+    rootBtn.onclick = () => loadDir('.');
+    box.appendChild(rootBtn);
+    let acc = '';
+    parts.forEach((p) => {
+      acc = acc ? acc + '/' + p : p;
+      box.appendChild(document.createTextNode(' / '));
+      const btn = document.createElement('button');
+      btn.textContent = p;
+      const target = acc;
+      btn.onclick = () => loadDir(target);
+      box.appendChild(btn);
+    });
+  }
+
+  function renderEntries(entries) {
+    const box = document.getElementById('entries');
+    box.textContent = '';
+    if (!entries.length) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = '(empty)';
+      box.appendChild(e);
+      return;
+    }
+    entries.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'entry ' + (entry.isDir ? 'dir' : 'file');
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = entry.name;
+      row.appendChild(name);
+      const size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = entry.isDir ? '' : fmtSize(entry.size);
+      row.appendChild(size);
+      const del = document.createElement('span');
+      del.className = 'del';
+      del.textContent = '\u2715';
+      del.title = 'Delete';
+      del.onclick = (ev) => {
+        ev.stopPropagation();
+        const relPath = currentDir === '.' ? entry.name : currentDir + '/' + entry.name;
+        if (!confirm('Delete ' + relPath + '?')) return;
+        api('/api/delete', { method: 'POST', json: true, body: JSON.stringify({ path: relPath }) })
+          .then(() => loadDir(currentDir))
+          .catch((err) => showMsg(err.message, 'error'));
+      };
+      row.appendChild(del);
+      row.onclick = () => {
+        const relPath = currentDir === '.' ? entry.name : currentDir + '/' + entry.name;
+        if (entry.isDir) loadDir(relPath);
+        else openFile(relPath);
+      };
+      box.appendChild(row);
+    });
+  }
+
+  async function openFile(relPath) {
+    try {
+      const data = await api('/api/read?path=' + encodeURIComponent(relPath));
+      currentFile = data.path;
+      document.getElementById('editorPathLabel').textContent = data.path;
+      document.getElementById('editor').value = data.content;
+      document.getElementById('saveBtn').disabled = false;
+      switchTab('editor');
+    } catch (err) { showMsg(err.message, 'error'); }
+  }
+
+  async function saveFile() {
+    if (!currentFile) return;
+    try {
+      await api('/api/write', { method: 'POST', json: true, body: JSON.stringify({ path: currentFile, content: document.getElementById('editor').value }) });
+      showMsg('Saved ' + currentFile, 'ok');
+    } catch (err) { showMsg(err.message, 'error'); }
+  }
+
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('active', p.id === 'pane-' + name));
+  }
+
+  async function runCommand() {
+    const cmd = document.getElementById('cmdInput').value;
+    if (!cmd.trim()) return;
+    const cwd = document.getElementById('termCwd').value || '.';
+    const out = document.getElementById('output');
+    const line = document.createElement('div');
+    line.className = 'cmdline';
+    line.textContent = '$ ' + cmd + '   (cwd: ' + cwd + ')';
+    out.appendChild(line);
+    out.scrollTop = out.scrollHeight;
+    const runBtn = document.getElementById('runBtn');
+    runBtn.disabled = true;
+    try {
+      const data = await api('/api/run', { method: 'POST', json: true, body: JSON.stringify({ cwd, command: cmd }) });
+      if (data.stdout) {
+        const o = document.createElement('div');
+        o.textContent = data.stdout;
+        out.appendChild(o);
+      }
+      if (data.stderr) {
+        const e = document.createElement('div');
+        e.className = 'stderr';
+        e.textContent = data.stderr;
+        out.appendChild(e);
+      }
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = data.error ? data.error : ('exit code ' + data.code);
+      out.appendChild(meta);
+    } catch (err) {
+      const e = document.createElement('div');
+      e.className = 'stderr';
+      e.textContent = err.message;
+      out.appendChild(e);
+    } finally {
+      runBtn.disabled = false;
+      out.scrollTop = out.scrollHeight;
+      document.getElementById('cmdInput').value = '';
+      document.getElementById('cmdInput').focus();
+    }
+  }
+
+  document.querySelectorAll('.tab').forEach((t) => t.onclick = () => switchTab(t.dataset.tab));
+  document.getElementById('saveBtn').onclick = saveFile;
+  document.getElementById('runBtn').onclick = runCommand;
+  document.getElementById('cmdInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') runCommand(); });
+  // Ctrl/Cmd+S saves the open file instead of the browser's save-page dialog.
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveFile(); }
+  });
+
+  loadDir('.');
+})();
+</script>
+</body>
+</html>
