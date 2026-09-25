@@ -1130,6 +1130,26 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     const ROUTE_CACHE_TTL_MS = 5 * 60 * 1000;
     const ROUTE_MAX_STALE_MS = 15 * 60 * 1000;
     const routeCache = {};
+
+    // Static per-airframe metadata (registration/manufacturer/model/built/operator) from the
+    // OpenSky aircraft database, served by cors-proxy's /v2/aircraft-info/<hex>. This never
+    // changes once fetched, so unlike routeCache there's no TTL - a hex's aircraft never becomes
+    // a different aircraft. Distinct from the Gemini "Aircraft profile" section below, which
+    // describes the TYPE (cached per-type, AI-generated); this is real registry data, per hex.
+    const aircraftInfoCache = {};
+
+    async function fetchAircraftInfo(hex) {
+      if (!hex || aircraftInfoCache[hex] !== undefined) return;
+      try {
+        const res = await fetchWithTimeout(`${WORKER_URL}/v2/aircraft-info/${encodeURIComponent(hex)}`, { headers: { Accept: 'application/json' } });
+        if (res.status === 404) { aircraftInfoCache[hex] = null; return; }
+        if (!res.ok) return; // 503 (db not built) or transient error - don't cache, try again next select
+        aircraftInfoCache[hex] = await res.json();
+      } catch (err) {
+        console.warn('[AIRCRAFT-INFO] lookup failed:', err); // leave uncached, retried on next select
+      }
+    }
+
     let adsbdbBackoffUntil = 0;
     let hexdbBackoffUntil = 0;
     let openSkyBackoffUntil = 0;
@@ -3613,6 +3633,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       fetchRoutesForAircraft([ac])
         .then(() => { if (selectedHex === ac.hex) renderAircraftDetailLive(); })
         .catch((err) => console.warn('[DETAIL] route lookup failed:', err));
+      fetchAircraftInfo(ac.hex)
+        .then(() => { if (selectedHex === ac.hex) renderAircraftDetailLive(); });
       resolveAircraftPhoto(ac)
         .then((url) => {
           if (selectedHex !== ac.hex) return null;
@@ -3852,14 +3874,27 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const live = document.getElementById('ad-live');
       if (live) {
         live.textContent = '';
-        // Real registry data for this specific airframe (when adsb.fi's feed has it) - not an
-        // AI guess. The Gemini profile below only ever describes the aircraft TYPE (and is
-        // cached per-type across every airframe of that type), so an individual tail number's
-        // build year has to come from here, from the feed itself, or not be shown at all.
-        const yearBuilt = Number(ac.year);
+        // Real registry data for this specific airframe - not an AI guess. The Gemini profile
+        // below only ever describes the aircraft TYPE (and is cached per-type across every
+        // airframe of that type), so an individual tail number's build year has to come from
+        // here: preferably the live feed itself (ac.year, when adsb.fi has it), falling back to
+        // the OpenSky aircraft-info lookup (fetchAircraftInfo) when the feed doesn't.
+        const info = aircraftInfoCache[ac.hex];
+        const feedYear = Number(ac.year);
+        const builtStr = Number.isInteger(feedYear) && feedYear >= 1900 && feedYear <= new Date().getFullYear()
+          ? String(feedYear)
+          : (info && info.built ? info.built : null);
+        const yearBuilt = builtStr ? parseInt(builtStr, 10) : NaN;
         if (Number.isInteger(yearBuilt) && yearBuilt >= 1900 && yearBuilt <= new Date().getFullYear()) {
           const age = new Date().getFullYear() - yearBuilt;
           live.appendChild(adStat('Age', `${age} yr${age === 1 ? '' : 's'} · built ${yearBuilt}`, null));
+        }
+        if (info && (info.manufacturername || info.model)) {
+          const make = [info.manufacturername, info.model].filter(Boolean).join(' ');
+          live.appendChild(adStat('Type', make, null));
+        }
+        if (info && info.operator && info.operator.toUpperCase() !== (ac.ownOp || '').trim().toUpperCase()) {
+          live.appendChild(adStat('Operator', info.operator, null));
         }
         const hasPos = Number.isFinite(ac.lat) && Number.isFinite(ac.lon);
         if (hasPos) {
