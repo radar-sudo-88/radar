@@ -38,29 +38,25 @@ set a token, the page will prompt for it once and remember it in that browser.
 ## Run it as a service (auto-start on boot)
 
 ```bash
-sudo tee /etc/systemd/system/pi-tools.service > /dev/null << 'EOF'
-[Unit]
-Description=pi-tools file browser + command runner
-After=network.target
+./pi-tools/install-service.sh
+```
 
-[Service]
-Type=simple
-User=radar
-WorkingDirectory=/home/radar/radar/pi-tools
-Environment=PORT=6969
-Environment=ROOT_DIR=/home/radar
-# Uncomment and set a real value to require a token:
-# Environment=PI_TOOLS_TOKEN=changeme
-ExecStart=/usr/bin/node /home/radar/radar/pi-tools/server.js
-Restart=on-failure
-RestartSec=3
+With a token required:
 
-[Install]
-WantedBy=multi-user.target
-EOF
+```bash
+TOKEN=changeme ./pi-tools/install-service.sh
+```
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now pi-tools
+Custom port or a narrower `ROOT_DIR`:
+
+```bash
+PORT=7000 ROOT_DIR=/home/radar/radar TOKEN=changeme ./pi-tools/install-service.sh
+```
+
+Remove it again:
+
+```bash
+./pi-tools/install-service.sh uninstall
 ```
 
 Check it's up:
