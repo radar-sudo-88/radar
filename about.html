@@ -341,6 +341,17 @@
       </ul>
     </section>
 
+    <section id="follow">
+      <h2>Follow mode</h2>
+      <p>
+        Select an aircraft and tap <strong>Follow</strong> to lock the scope onto it. The 35 NM
+        radius and the map centre travel with the aircraft as it moves, so you can keep watching a
+        specific flight even after it leaves your home area. If it drops off the feed, the scope
+        holds its last known position for 90 seconds before returning home; tap <strong>Stop</strong>
+        at any time to return immediately.
+      </p>
+    </section>
+
     <section id="dashboard">
       <h2>Dashboard features &amp; data points</h2>
       <p style="margin-bottom: 1rem;">
@@ -373,7 +384,8 @@
       <dl class="data">
         <div>
           <dt>Identification &amp; imagery</dt>
-          <dd>The aircraft's unique registration, type, ICAO code and a high-resolution photograph.</dd>
+          <dd>The aircraft's unique registration, type, ICAO code, manufacturer, build year and a
+            high-resolution photograph.</dd>
         </div>
         <div>
           <dt>Proximity metrics</dt>
@@ -472,9 +484,12 @@
           <div><dt>Live aircraft positions</dt><dd><a href="https://adsb.fi/" target="_blank" rel="noopener">adsb.fi</a></dd></div>
           <div><dt>Flight routes</dt><dd>
             <a href="https://adsb.lol/" target="_blank" rel="noopener">adsb.lol</a>,
-            <a href="https://www.adsbdb.com/" target="_blank" rel="noopener">adsbdb</a>,
-            <a href="https://hexdb.io/" target="_blank" rel="noopener">hexdb.io</a> and the
+            <a href="https://www.adsbdb.com/" target="_blank" rel="noopener">adsbdb</a> and
+            <a href="https://hexdb.io/" target="_blank" rel="noopener">hexdb.io</a>
+          </dd></div>
+          <div><dt>Registration, manufacturer &amp; build year</dt><dd>
             <a href="https://opensky-network.org/" target="_blank" rel="noopener">OpenSky Network</a>
+            aircraft database
           </dd></div>
           <div><dt>Aircraft photos</dt><dd><a href="https://www.planespotters.net/" target="_blank" rel="noopener">Planespotters.net</a></dd></div>
           <div><dt>Airline logos</dt><dd>
@@ -499,8 +514,10 @@
         <p>
           ADS-B data comes from volunteer-run networks and can be delayed, incomplete or wrong. Aircraft
           may be missing, mislabelled or shown in the wrong place, and some aircraft &mdash; military
-          ones in particular &mdash; don't broadcast, or aren't shown. Alerts are best-effort and are
-          not guaranteed. The weather radar is approximate and can be around 10 minutes old.
+          ones in particular &mdash; don't broadcast, or aren't shown. Manufacturer and build-year
+          details aren't available for every aircraft, and the underlying database is a static
+          snapshot rather than continuously updated. Alerts are best-effort and are not guaranteed.
+          The weather radar is approximate and can be around 10 minutes old.
         </p>
         <p>
           This is an independent project. It is not affiliated with, or endorsed by, any airline, air

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>plane-sim</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #05070a;
+    --panel: #0a0f14;
+    --line: #1c2933;
+    --cyan: #4fd8e8;
+    --cyan-dim: #2a7a85;
+    --text: #d8eef2;
+    --text-dim: #6f8a92;
+    --red: #ff5c5c;
+    --amber: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(ellipse at 50% -10%, #0d1a20 0%, var(--bg) 60%);
+    color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100vh; overflow: hidden; user-select: none; -webkit-user-select: none;
+  }
+  h1 { font-size: 0.85rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--cyan); margin: 0 0 1.1rem; text-shadow: 0 0 12px rgba(79,216,232,0.4); }
+
+  .hud {
+    width: min(92vw, 460px); border: 1px solid var(--line); background: rgba(10,15,20,0.85);
+    padding: 1.1rem 1.2rem; border-radius: 4px; backdrop-filter: blur(3px);
+  }
+
+  .compass-row { display: flex; align-items: center; justify-content: center; gap: 1.6rem; margin-bottom: 1rem; }
+  #compass { flex-shrink: 0; }
+  .readouts { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1.2rem; font-size: 0.8rem; }
+  .readout dt { color: var(--text-dim); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .readout dd { margin: 0; font-size: 1.15rem; color: var(--cyan); }
+  .readout { margin: 0; }
+
+  .status { text-align: center; font-size: 0.75rem; color: var(--text-dim); margin: 0.9rem 0; min-height: 1.2em; }
+  .status.err { color: var(--red); }
+  .status.live { color: var(--amber); }
+
+  .controls { display: flex; gap: 0.6rem; justify-content: center; margin-bottom: 1.1rem; }
+  button.action {
+    background: rgba(79,216,232,0.08); border: 1px solid var(--cyan-dim); color: var(--cyan);
+    padding: 0.55rem 1.3rem; font: inherit; font-size: 0.8rem; letter-spacing: 0.05em;
+    border-radius: 3px; cursor: pointer;
+  }
+  button.action:hover { border-color: var(--cyan); }
+  button.action.stop { border-color: #7a3030; color: var(--red); background: rgba(255,92,92,0.08); }
+
+  .startrow { display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem; }
+  .startrow input {
+    background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    padding: 0.5rem 0.7rem; font: inherit; font-size: 0.8rem; border-radius: 3px; width: 11rem;
+  }
+  .startrow input:focus { outline: none; border-color: var(--cyan-dim); }
+
+  .keymap { display: flex; justify-content: center; gap: 1.6rem; font-size: 0.72rem; color: var(--text-dim); margin-top: 0.3rem; }
+  .keymap b { color: var(--cyan); }
+  kbd {
+    display: inline-block; min-width: 1.3em; text-align: center; border: 1px solid var(--line);
+    border-radius: 3px; padding: 0.05rem 0.35rem; margin: 0 0.15rem; color: var(--text);
+    background: var(--panel); font-size: 0.72rem;
+  }
+  kbd.active { border-color: var(--cyan); color: var(--cyan); box-shadow: 0 0 6px rgba(79,216,232,0.5); }
+  .keyrow { display: flex; justify-content: center; gap: 0.3rem; margin-top: 0.2rem; }
+
+  footer { margin-top: 1rem; font-size: 0.68rem; color: var(--text-dim); text-align: center; max-width: 26rem; }
+</style>
+</head>
+<body>
+<h1>&#9992; plane-sim</h1>
+<div class="hud">
+  <div class="compass-row">
+    <svg id="compass" width="96" height="96" viewBox="0 0 96 96">
+      <circle cx="48" cy="48" r="44" fill="none" stroke="#1c2933" stroke-width="1.5"/>
+      <circle cx="48" cy="48" r="44" fill="none" stroke="#4fd8e8" stroke-width="1" opacity="0.25"/>
+      <g id="needle" transform="rotate(0 48 48)">
+        <polygon points="48,10 42,48 48,40 54,48" fill="#4fd8e8"/>
+        <polygon points="48,86 42,58 48,64 54,58" fill="#2a7a85"/>
+      </g>
+      <text x="48" y="12" fill="#6f8a92" font-size="8" text-anchor="middle" font-family="monospace">N</text>
+    </svg>
+    <dl class="readouts">
+      <div class="readout"><dt>Speed</dt><dd id="rSpeed">0 kt</dd></div>
+      <div class="readout"><dt>Track</dt><dd id="rTrack">000&deg;</dd></div>
+      <div class="readout"><dt>Altitude</dt><dd id="rAlt">0 ft</dd></div>
+      <div class="readout"><dt>Position</dt><dd id="rPos" style="font-size:0.68rem; color:#6f8a92;">-</dd></div>
+    </dl>
+  </div>
+
+  <div class="startrow" id="startRow">
+    <input id="startPostcode" placeholder="UK postcode (optional)" autocomplete="off">
+  </div>
+  <div class="controls">
+    <button class="action" id="startBtn">Take off</button>
+    <button class="action stop" id="stopBtn" style="display:none;">Land / clear</button>
+  </div>
+
+  <div class="status" id="statusLine">Not flying.</div>
+
+  <div class="keyrow">
+    <kbd data-key="w">W</kbd>
+  </div>
+  <div class="keyrow">
+    <kbd data-key="a">A</kbd><kbd data-key="s">S</kbd><kbd data-key="d">D</kbd>
+  </div>
+  <div class="keymap">
+    <span><b>W/S</b> throttle</span>
+    <span><b>A/D</b> turn</span>
+    <span><b>&uarr;/&darr;</b> climb/descend</span>
+  </div>
+</div>
+<footer>
+  Broadcasts as a real aircraft (hex SIMWASD1) on the live public radar while flying - anyone
+  currently viewing the site will see it. Closing this tab stops sending updates and it expires
+  from the feed within ~15s.
+</footer>
+<script>
+(function () {
+  const els = {
+    speed: document.getElementById('rSpeed'),
+    track: document.getElementById('rTrack'),
+    alt: document.getElementById('rAlt'),
+    pos: document.getElementById('rPos'),
+    status: document.getElementById('statusLine'),
+    needle: document.getElementById('needle'),
+    startBtn: document.getElementById('startBtn'),
+    stopBtn: document.getElementById('stopBtn'),
+    startRow: document.getElementById('startRow'),
+    postcode: document.getElementById('startPostcode'),
+  };
+  const keys = { w: false, a: false, s: false, d: false, up: false, down: false };
+  let flying = false;
+
+  function render(state) {
+    flying = !!state.flying;
+    els.speed.textContent = Math.round(state.gs) + ' kt';
+    els.track.textContent = String(Math.round(state.track)).padStart(3, '0') + '\u00B0';
+    els.alt.textContent = Math.round(state.alt).toLocaleString() + ' ft';
+    els.pos.textContent = flying ? state.lat.toFixed(4) + ', ' + state.lon.toFixed(4) : '-';
+    els.needle.setAttribute('transform', 'rotate(' + state.track + ' 48 48)');
+    els.startBtn.style.display = flying ? 'none' : '';
+    els.stopBtn.style.display = flying ? '' : 'none';
+    els.startRow.style.display = flying ? 'none' : '';
+    if (state.lastError) {
+      els.status.textContent = 'Error reaching radar proxy: ' + state.lastError;
+      els.status.className = 'status err';
+    } else if (flying) {
+      els.status.textContent = 'Live on the public radar as SIMWASD1.';
+      els.status.className = 'status live';
+    } else {
+      els.status.textContent = 'Not flying.';
+      els.status.className = 'status';
+    }
+  }
+
+  async function post(path, body) {
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    return res.json();
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch('/api/state');
+      render(await res.json());
+    } catch (e) { /* transient - next poll will retry */ }
+  }
+  setInterval(poll, 500);
+  poll();
+
+  async function sendKeys() {
+    if (!flying) return;
+    try { render(await post('/api/keys', keys)); } catch (e) { /* next tick retries */ }
+  }
+  setInterval(sendKeys, 100);
+
+  function setKey(k, val) {
+    if (!(k in keys)) return;
+    keys[k] = val;
+    const kbd = document.querySelector('kbd[data-key="' + k + '"]');
+    if (kbd) kbd.classList.toggle('active', val);
+  }
+
+  const KEYMAP = { KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', ArrowUp: 'up', ArrowDown: 'down' };
+  document.addEventListener('keydown', (e) => {
+    const k = KEYMAP[e.code];
+    if (!k) return;
+    e.preventDefault();
+    setKey(k, true);
+  });
+  document.addEventListener('keyup', (e) => {
+    const k = KEYMAP[e.code];
+    if (!k) return;
+    e.preventDefault();
+    setKey(k, false);
+  });
+  window.addEventListener('blur', () => { for (const k of Object.keys(keys)) setKey(k, false); });
+
+  async function geocodePostcode(raw) {
+    const compact = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+    if (compact.length < 5 || compact.length > 7) throw new Error('not a valid UK postcode');
+    const postcode = compact.slice(0, -3) + ' ' + compact.slice(-3);
+    const res = await fetch('https://api.postcodes.io/postcodes/' + encodeURIComponent(postcode));
+    if (!res.ok) throw new Error('postcode lookup failed');
+    const data = await res.json();
+    if (!data.result) throw new Error('postcode not found');
+    return { lat: data.result.latitude, lon: data.result.longitude };
+  }
+
+  els.startBtn.addEventListener('click', async () => {
+    let coords = {};
+    const pc = els.postcode.value.trim();
+    if (pc) {
+      els.status.textContent = 'Looking up postcode...';
+      try { coords = await geocodePostcode(pc); }
+      catch (err) { els.status.textContent = err.message; els.status.className = 'status err'; return; }
+    }
+    render(await post('/api/start', coords));
+  });
+
+  els.stopBtn.addEventListener('click', async () => {
+    render(await post('/api/stop'));
+  });
+})();
+</script>
+</body>
+</html>
