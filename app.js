@@ -3368,15 +3368,22 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (!link) return;
       let taps = 0;
       let resetTimer = null;
+      let navTimer = null;
       link.addEventListener('click', (e) => {
+        // Every tap is held back briefly rather than navigating immediately - otherwise tap #1
+        // would already be on the About page before a 2nd tap could ever register. If nothing
+        // else comes in within 350ms it's just a normal tap, so follow the link as usual.
+        e.preventDefault();
         taps += 1;
         clearTimeout(resetTimer);
-        resetTimer = setTimeout(() => { taps = 0; }, 3000);
+        clearTimeout(navTimer);
         if (taps >= 7) {
-          e.preventDefault();
           taps = 0;
           showEasterEgg('\ud83d\udc4b built by xj \u2014 github.com/XrayXJ');
+          return;
         }
+        resetTimer = setTimeout(() => { taps = 0; }, 3000);
+        navTimer = setTimeout(() => { window.location.href = link.href; }, 350);
       });
     }
     initDevCreditEasterEgg();
