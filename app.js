@@ -35,7 +35,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     const SETTINGS_KEY = 'radarSettings';
     const SETTINGS_DEFAULTS = {
       speed: 'kts', alt: 'ft', dist: 'nm', theme: 'green',
-      rareAlerts: true, shareLocation: true
+      rareAlerts: true, shareLocation: true, milOnly: false
     };
     const SPEED_UNITS = {
       kts: { label: 'kts', perKt: 1, spoken: 'knots' },
@@ -69,7 +69,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (has(ALT_UNITS, raw.alt)) out.alt = raw.alt;
       if (has(DIST_UNITS, raw.dist)) out.dist = raw.dist;
       if (has(THEMES, raw.theme)) out.theme = raw.theme;
-      ['rareAlerts', 'shareLocation'].forEach((k) => {
+      ['rareAlerts', 'shareLocation', 'milOnly'].forEach((k) => {
         if (typeof raw[k] === 'boolean') out[k] = raw[k];
       });
       return out;
@@ -2352,8 +2352,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     function updateUIState(isConnected) {
       if (isConnected) {
         applyFollow();
-        renderFlightBoard(liveAircraft);
-        updateNearestScrollboard(liveAircraft);
+        renderFlightBoard(shownAircraft());
+        updateNearestScrollboard(shownAircraft());
         checkRareAircraft(liveAircraft);
         checkLinkedAircraft();
         refreshAircraftDetail();
@@ -2436,6 +2436,16 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         changed = true;
       }
       if (changed) saveDailyLog(log);
+    }
+
+    // Aircraft to actually display: everything, or only military (plus emergencies and the
+    // locked target so those never vanish) when the "Military only" setting is on.
+    function shownAircraft() {
+      if (!settings.milOnly) return liveAircraft;
+      return liveAircraft.filter(ac =>
+        isMilitary(ac) ||
+        ac.squawk === '7500' || ac.squawk === '7600' || ac.squawk === '7700' ||
+        (lockedAircraft && lockedAircraft.hex === ac.hex));
     }
 
     function isMilitary(ac) {
@@ -2927,7 +2937,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         // apart instead of stacking illegibly on top of each other - see the collision
         // step just before each label is drawn, below.
         const placedLabelBoxes = [];
-        liveAircraft.forEach(ac => {
+        shownAircraft().forEach(ac => {
           if (!ac.lat || !ac.lon || !ac.__pt) return;
 
           // Cached once per poll/resize instead of re-derived from the map every frame -
@@ -3580,7 +3590,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     function findAircraftAtPoint(x, y, tolPx) {
       let best = null;
       let bestDist = Infinity;
-      for (const ac of liveAircraft) {
+      for (const ac of shownAircraft()) {
         if (!ac.hex || !ac.__pt) continue;
         let d = Math.hypot(ac.__pt.x - x, ac.__pt.y - y);
         const box = ac.__labelBox;
@@ -4300,8 +4310,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (!feedStarted) return;
       try {
         renderStaticScopeLayer();
-        renderFlightBoard(liveAircraft);
-        updateNearestScrollboard(liveAircraft);
+        renderFlightBoard(shownAircraft());
+        updateNearestScrollboard(shownAircraft());
         if (selectedHex) {
           renderAircraftDetailLive();
           renderAircraftDetailProfile();
