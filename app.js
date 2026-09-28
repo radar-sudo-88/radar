@@ -35,7 +35,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     const SETTINGS_KEY = 'radarSettings';
     const SETTINGS_DEFAULTS = {
       speed: 'kts', alt: 'ft', dist: 'nm', theme: 'green',
-      rareAlerts: true, shareLocation: true, milOnly: false
+      rareAlerts: true, shareLocation: true, milOnly: false, showAirports: true,
+      filterOperator: '', filterType: '', filterSquawk: '',
+      filterAltMin: '', filterAltMax: '', filterSpeedMin: '', filterSpeedMax: ''
     };
     const SPEED_UNITS = {
       kts: { label: 'kts', perKt: 1, spoken: 'knots' },
@@ -69,8 +71,16 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (has(ALT_UNITS, raw.alt)) out.alt = raw.alt;
       if (has(DIST_UNITS, raw.dist)) out.dist = raw.dist;
       if (has(THEMES, raw.theme)) out.theme = raw.theme;
-      ['rareAlerts', 'shareLocation', 'milOnly'].forEach((k) => {
+      ['rareAlerts', 'shareLocation', 'milOnly', 'showAirports'].forEach((k) => {
         if (typeof raw[k] === 'boolean') out[k] = raw[k];
+      });
+      // Free-text filters: cap length defensively, nothing else to validate - shownAircraft()
+      // treats an unparseable/empty value as "no filter".
+      ['filterOperator', 'filterType', 'filterSquawk'].forEach((k) => {
+        if (typeof raw[k] === 'string') out[k] = raw[k].slice(0, 40);
+      });
+      ['filterAltMin', 'filterAltMax', 'filterSpeedMin', 'filterSpeedMax'].forEach((k) => {
+        if (typeof raw[k] === 'string' && (raw[k] === '' || Number.isFinite(Number(raw[k])))) out[k] = raw[k];
       });
       return out;
     }
@@ -803,6 +813,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const statusBar = document.getElementById('status-bar');
       if (statusBar) statusBar.textContent = formatStationLabel(userConfig.lat, userConfig.lon);
       pruneOldDailyLogs();
+      maybeShowHalloweenEgg();
 
       initKioskAudio();
       if ('speechSynthesis' in window) {
@@ -1926,8 +1937,46 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
       recomputeMapProjectionCache();
 
+      renderAirportMarkers();
       refreshWeatherOverlay();
       setInterval(refreshWeatherOverlay, WEATHER_REFRESH_MS);
+    }
+
+    // ---------------------------------------------------------------------
+    // Airport markers: one per entry in airportDatabase (the same table the route/ETA code
+    // uses), so there's a single source of truth instead of a second hand-maintained list.
+    // A base whose name flags it as military gets a distinct icon/colour. Toggled by the
+    // "Show airports" setting; the layer itself is only built once.
+    // ---------------------------------------------------------------------
+    let airportLayer = null;
+    const MILITARY_AIRPORT_RE = /\bRAF\b|Air Base|Air Force Base|\bAFB\b/i;
+
+    function airportDivIcon(isMil) {
+      return L.divIcon({
+        className: 'airport-marker',
+        html: `<span class="airport-marker-icon${isMil ? ' mil' : ''}">${isMil ? '\u2708\ufe0f' : '\ud83d\udee9\ufe0f'}</span>`,
+        iconSize: [18, 18],
+        iconAnchor: [9, 9]
+      });
+    }
+
+    function renderAirportMarkers() {
+      if (!map) return;
+      if (!airportLayer) {
+        airportLayer = L.layerGroup();
+        Object.entries(airportDatabase).forEach(([code, info]) => {
+          if (!info || !Number.isFinite(info.lat) || !Number.isFinite(info.lon)) return;
+          const isMil = MILITARY_AIRPORT_RE.test(info.name || '');
+          L.marker([info.lat, info.lon], { icon: airportDivIcon(isMil), keyboard: false, interactive: true })
+            .bindTooltip(`${code} \u00b7 ${info.name}`, { direction: 'top', offset: [0, -8] })
+            .addTo(airportLayer);
+        });
+      }
+      if (settings.showAirports) {
+        if (!map.hasLayer(airportLayer)) airportLayer.addTo(map);
+      } else if (map.hasLayer(airportLayer)) {
+        map.removeLayer(airportLayer);
+      }
     }
 
     // ---------------------------------------------------------------------
@@ -2438,14 +2487,69 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (changed) saveDailyLog(log);
     }
 
-    // Aircraft to actually display: everything, or only military (plus emergencies and the
-    // locked target so those never vanish) when the "Military only" setting is on.
+    // Aircraft to actually display. "Military only" plus the free-text filters in the
+    // settings panel (operator/type/squawk/altitude/speed) all AND together. An emergency
+    // squawk or the currently-locked target always gets through regardless of filters, so a
+    // Mayday never disappears just because someone left a filter set.
+    function alwaysShown(ac) {
+      return ac.squawk === '7500' || ac.squawk === '7600' || ac.squawk === '7700' ||
+        (lockedAircraft && lockedAircraft.hex === ac.hex);
+    }
+    // "RYR" matches Ryanair whether the user typed "ryr" or "Ryanair operator RYR" - it's a
+    // loose substring match against both the operator and callsign, since ownOp isn't always
+    // populated but the callsign prefix usually still identifies the airline.
+    function matchesOperatorFilter(ac, needle) {
+      const hay = `${(ac.ownOp || '')} ${(ac.flight || '')}`.toUpperCase();
+      return hay.includes(needle);
+    }
+    // Type filter matches a prefix of the ICAO type code (e.g. "A32" catches A319/A320/A321)
+    // rather than requiring the full code.
+    function matchesTypeFilter(ac, needle) {
+      return (ac.t || '').toUpperCase().startsWith(needle);
+    }
+    // Squawk filter: comma-separated list of exact codes or prefixes, e.g. "7000,72" matches
+    // squawk 7000 and anything starting 72xx.
+    function matchesSquawkFilter(ac, list) {
+      const sq = String(ac.squawk || '');
+      if (!sq) return false;
+      return list.some((needle) => sq === needle || (needle.length < 4 && sq.startsWith(needle)));
+    }
     function shownAircraft() {
-      if (!settings.milOnly) return liveAircraft;
-      return liveAircraft.filter(ac =>
-        isMilitary(ac) ||
-        ac.squawk === '7500' || ac.squawk === '7600' || ac.squawk === '7700' ||
-        (lockedAircraft && lockedAircraft.hex === ac.hex));
+      const f = settings;
+      const hasOperator = !!f.filterOperator.trim();
+      const hasType = !!f.filterType.trim();
+      const squawkList = f.filterSquawk.split(',').map((s) => s.trim()).filter(Boolean);
+      const altMin = f.filterAltMin !== '' ? Number(f.filterAltMin) : null;
+      const altMax = f.filterAltMax !== '' ? Number(f.filterAltMax) : null;
+      const spdMin = f.filterSpeedMin !== '' ? Number(f.filterSpeedMin) : null;
+      const spdMax = f.filterSpeedMax !== '' ? Number(f.filterSpeedMax) : null;
+      const anyFilterActive = f.milOnly || hasOperator || hasType || squawkList.length ||
+        altMin !== null || altMax !== null || spdMin !== null || spdMax !== null;
+      if (!anyFilterActive) return liveAircraft;
+
+      const operatorNeedle = f.filterOperator.trim().toUpperCase();
+      const typeNeedle = f.filterType.trim().toUpperCase();
+
+      return liveAircraft.filter((ac) => {
+        if (alwaysShown(ac)) return true;
+        if (f.milOnly && !isMilitary(ac)) return false;
+        if (hasOperator && !matchesOperatorFilter(ac, operatorNeedle)) return false;
+        if (hasType && !matchesTypeFilter(ac, typeNeedle)) return false;
+        if (squawkList.length && !matchesSquawkFilter(ac, squawkList)) return false;
+        if ((altMin !== null || altMax !== null)) {
+          const alt = Number(ac.alt_baro);
+          if (!Number.isFinite(alt)) return false;
+          if (altMin !== null && alt < altMin) return false;
+          if (altMax !== null && alt > altMax) return false;
+        }
+        if ((spdMin !== null || spdMax !== null)) {
+          const gs = Number(ac.gs);
+          if (!Number.isFinite(gs)) return false;
+          if (spdMin !== null && gs < spdMin) return false;
+          if (spdMax !== null && gs > spdMax) return false;
+        }
+        return true;
+      });
     }
 
     function isMilitary(ac) {
@@ -3149,6 +3253,15 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     };
     // Special UK squawks that mark something worth looking up for (see UK_SQUAWK_CODES).
     const RARE_SQUAWKS = { '7003': 'Red Arrows', '7007': 'Open Skies observation aircraft' };
+    // Easter egg: callsign prefixes worth a shout even when the airframe itself is nothing
+    // unusual - matched against the start of ac.flight. NORAD's Santa Tracker really does fly
+    // under "SANTA" every December; the rest are real recurring callsign patterns too.
+    const RARE_CALLSIGNS = {
+      SANTA: '\ud83c\udf85 Santa (NORAD Santa Tracker)',
+      NOAA: 'NOAA Hurricane Hunter',
+      RCH: 'USAF Reach heavy airlift',
+      SAM: 'US Special Air Mission (VIP transport)'
+    };
     const RARE_REPEAT_COOLDOWN_MS = 60 * 60 * 1000; // a loitering A380 shouldn't chime every few minutes
     const RARE_BANNER_MS = 15000;
     const rareAnnouncedAt = new Map();
@@ -3159,6 +3272,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (Object.prototype.hasOwnProperty.call(RARE_TYPES, type)) return { label: RARE_TYPES[type], reason: 'type' };
       const sq = String(ac.squawk || '');
       if (Object.prototype.hasOwnProperty.call(RARE_SQUAWKS, sq)) return { label: RARE_SQUAWKS[sq], reason: 'squawk' };
+      const flight = String(ac.flight || '').trim().toUpperCase();
+      const callsignHit = Object.keys(RARE_CALLSIGNS).find((prefix) => flight.startsWith(prefix));
+      if (callsignHit) return { label: RARE_CALLSIGNS[callsignHit], reason: 'callsign' };
       return null;
     }
 
@@ -3224,6 +3340,53 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
       }, 600);
+    }
+
+    // ---------------------------------------------------------------------
+    // Easter eggs (the fun, harmless kind): a one-off toast for things that aren't tied to a
+    // specific aircraft - a seasonal nod, a tap-to-discover dev credit. Legendary callsigns
+    // (SANTA, NOAA, etc.) instead reuse the rare-aircraft banner/chime/voice pipeline above via
+    // RARE_CALLSIGNS, since those genuinely are a sighting worth announcing the normal way.
+    // ---------------------------------------------------------------------
+    let eggToastTimer = null;
+    function showEasterEgg(text) {
+      const el = document.getElementById('egg-toast');
+      if (!el) return;
+      el.textContent = text;
+      el.hidden = false;
+      requestAnimationFrame(() => el.classList.add('show'));
+      clearTimeout(eggToastTimer);
+      eggToastTimer = setTimeout(() => {
+        el.classList.remove('show');
+        setTimeout(() => { el.hidden = true; }, 300);
+      }, 5000);
+    }
+
+    // Tap the info (\u2139\ufe0f) link 7 times within 3 seconds to find the dev credit.
+    function initDevCreditEasterEgg() {
+      const link = document.getElementById('about-link');
+      if (!link) return;
+      let taps = 0;
+      let resetTimer = null;
+      link.addEventListener('click', (e) => {
+        taps += 1;
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => { taps = 0; }, 3000);
+        if (taps >= 7) {
+          e.preventDefault();
+          taps = 0;
+          showEasterEgg('\ud83d\udc4b built by xj \u2014 github.com/XrayXJ');
+        }
+      });
+    }
+    initDevCreditEasterEgg();
+
+    // Halloween: a harmless once-per-session nod, no visual changes to the scope itself.
+    function maybeShowHalloweenEgg() {
+      const now = new Date();
+      if (now.getMonth() === 9 && now.getDate() === 31) {
+        showEasterEgg('\ud83c\udf83 Happy Halloween \u2014 watch for anything unidentified tonight');
+      }
     }
 
     function checkRareAircraft(acList) {
@@ -4306,6 +4469,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       applyTheme();
       updateRadiusTexts();
       buildAltitudeLegend();
+      renderAirportMarkers();
       if (radarCircle) radarCircle.setStyle({ color: currentTheme().accent, fillColor: currentTheme().accent });
       if (!feedStarted) return;
       try {
@@ -4345,6 +4509,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           });
         });
         panel.querySelectorAll('input[data-toggle]').forEach((cb) => { cb.checked = !!settings[cb.dataset.toggle]; });
+        panel.querySelectorAll('[data-filter]').forEach((inp) => {
+          if (document.activeElement !== inp) inp.value = settings[inp.dataset.filter] || '';
+        });
       }
       function openPanel() {
         syncControls();
@@ -4381,6 +4548,27 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           refreshForSettings();
         });
       });
+      // Filter inputs update live as you type (debounced) rather than needing a blur/submit,
+      // so the flight board visibly narrows down while you're still typing an operator/type.
+      let filterDebounce = null;
+      panel.querySelectorAll('[data-filter]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          settings[inp.dataset.filter] = inp.value;
+          clearTimeout(filterDebounce);
+          filterDebounce = setTimeout(() => { saveSettings(); refreshForSettings(); }, 250);
+        });
+      });
+      const clearFiltersBtn = document.getElementById('settings-clear-filters');
+      if (clearFiltersBtn) {
+        clearFiltersBtn.addEventListener('click', () => {
+          ['filterOperator', 'filterType', 'filterSquawk', 'filterAltMin', 'filterAltMax', 'filterSpeedMin', 'filterSpeedMax']
+            .forEach((k) => { settings[k] = ''; });
+          saveSettings();
+          refreshForSettings();
+          syncControls();
+          say('Filters cleared');
+        });
+      }
 
       document.getElementById('settings-copy-link').addEventListener('click', async () => {
         const url = buildShareLink();

@@ -74,6 +74,10 @@
        in app.js). Tap it to open that aircraft's details. -->
   <button id="rare-banner" type="button" hidden></button>
 
+  <!-- Easter-egg toast (seasonal nods, the tap-7x dev credit on the info link). See
+       showEasterEgg() in app.js. -->
+  <div id="egg-toast" hidden></div>
+
   <div id="settings-backdrop" hidden></div>
   <div id="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
     <div class="st-head">
@@ -129,9 +133,40 @@
         <input type="checkbox" data-toggle="milOnly">
       </label>
       <label class="st-toggle">
+        <span><strong>Show airports</strong><small>Mark nearby airports and airbases on the map</small></span>
+        <input type="checkbox" data-toggle="showAirports">
+      </label>
+      <label class="st-toggle">
         <span><strong>Include my postcode in shared links</strong><small>Off: shared links open on the viewer's own location</small></span>
         <input type="checkbox" data-toggle="shareLocation">
       </label>
+    </div>
+
+    <div class="st-group">
+      <div class="st-group-title">Filters</div>
+      <div class="st-row">
+        <div class="st-label">Operator</div>
+        <input type="text" class="st-input" data-filter="filterOperator" placeholder="e.g. RYR, BAW, EZY" autocomplete="off">
+      </div>
+      <div class="st-row">
+        <div class="st-label">Type</div>
+        <input type="text" class="st-input" data-filter="filterType" placeholder="e.g. A320, B738, C130" autocomplete="off">
+      </div>
+      <div class="st-row">
+        <div class="st-label">Squawk</div>
+        <input type="text" class="st-input" data-filter="filterSquawk" placeholder="e.g. 7000, 72" autocomplete="off">
+      </div>
+      <div class="st-row">
+        <div class="st-label">Altitude (ft)</div>
+        <input type="number" class="st-input st-input-narrow" data-filter="filterAltMin" placeholder="Min">
+        <input type="number" class="st-input st-input-narrow" data-filter="filterAltMax" placeholder="Max">
+      </div>
+      <div class="st-row">
+        <div class="st-label">Speed (kts)</div>
+        <input type="number" class="st-input st-input-narrow" data-filter="filterSpeedMin" placeholder="Min">
+        <input type="number" class="st-input st-input-narrow" data-filter="filterSpeedMax" placeholder="Max">
+      </div>
+      <button type="button" id="settings-clear-filters" class="st-btn">Clear filters</button>
     </div>
 
     <div class="st-actions">

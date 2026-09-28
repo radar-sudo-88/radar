@@ -1153,6 +1153,13 @@
     .st-group-title { font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 0.35rem; }
     .st-row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
     .st-label { width: 4.6rem; flex-shrink: 0; color: var(--text-dim); }
+    .st-input {
+      flex: 1; min-width: 0; padding: 0.35rem 0.5rem; border-radius: 6px;
+      border: 1px solid var(--card-border); background: var(--input-bg); color: var(--text-main);
+      font: inherit; font-size: 0.8rem;
+    }
+    .st-input:focus { outline: none; border-color: var(--accent-green); }
+    .st-input-narrow { flex: 1; width: 0; }
     .st-seg { flex: 1; display: flex; gap: 0.3rem; }
     .st-seg button {
       flex: 1;
@@ -1220,6 +1227,36 @@
     }
     #rare-banner .rb-star { font-size: 1rem; }
     #rare-banner .rb-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Easter-egg toast: seasonal nods and the tap-7x dev credit. See showEasterEgg() in app.js. */
+    #egg-toast {
+      position: fixed;
+      bottom: 1.2rem;
+      left: 50%;
+      transform: translate(-50%, 0.6rem);
+      z-index: 10005;
+      max-width: calc(100vw - 2rem);
+      padding: 0.5rem 0.9rem;
+      background: var(--card-bg);
+      border: 1px solid var(--accent-green);
+      border-radius: 999px;
+      color: var(--text-main);
+      font-size: 0.8rem;
+      text-align: center;
+      opacity: 0;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      pointer-events: none;
+    }
+    #egg-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    /* Airport markers (see renderAirportMarkers() in app.js). Plain emoji glyphs, no extra
+       image assets to load. */
+    .airport-marker-icon {
+      display: flex; align-items: center; justify-content: center;
+      width: 18px; height: 18px; font-size: 12px; line-height: 1;
+      filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+    }
+    .airport-marker-icon.mil { filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9)) hue-rotate(20deg); }
+
     @keyframes rareBannerIn {
       from { opacity: 0; transform: translate(-50%, -0.6rem); }
       to { opacity: 1; transform: translate(-50%, 0); }
