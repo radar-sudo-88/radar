@@ -4041,6 +4041,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         title.textContent = callsign || String(ac.hex).toUpperCase();
         title.classList.toggle('alert', isAlert);
       }
+      panel.style.setProperty('--ad-alt', altitudeColor(ac.alt_baro));
       adSetText('ad-sub', [reg, type, `ICAO ${String(ac.hex).toUpperCase()}`].filter(Boolean).join(' · '));
 
       const tagsEl = document.getElementById('ad-tags');

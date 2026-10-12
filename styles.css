@@ -1328,3 +1328,135 @@
       font: inherit;
       cursor: pointer;
     }
+
+    /* ------------------------------------------------------------------
+       Aircraft detail panel - polished look. Overrides the earlier .aircraft-detail / .ad-* rules
+       (same selectors, later in the file). --ad-alt is set per aircraft in
+       renderAircraftDetailLive() from the same altitude colour the scope uses, so the panel's
+       accent matches the plane you tapped; it falls back to the theme green.
+       ------------------------------------------------------------------ */
+    .aircraft-detail {
+      --ad-accent: var(--ad-alt, var(--accent-green));
+      background: linear-gradient(165deg, rgba(10, 30, 18, 0.94) 0%, rgba(4, 12, 7, 0.97) 55%, rgba(2, 8, 5, 0.98) 100%);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(var(--accent-rgb), 0.22);
+      border-radius: 14px;
+      padding: 0.85rem 0.85rem 0.75rem;
+      box-shadow:
+        0 10px 34px rgba(0, 0, 0, 0.7),
+        0 0 0 1px rgba(0, 0, 0, 0.4),
+        0 0 26px color-mix(in srgb, var(--ad-accent) 18%, transparent),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      overflow-x: hidden;
+    }
+    /* Thin animated accent bar across the top edge. */
+    .aircraft-detail::before {
+      content: '';
+      display: block;
+      height: 3px;
+      margin: -0.85rem -0.85rem 0.7rem;
+      background: linear-gradient(90deg, var(--ad-accent), var(--accent-military), var(--ad-accent));
+      background-size: 200% 100%;
+      animation: ad-flow 6s linear infinite;
+    }
+    .aircraft-detail::-webkit-scrollbar { width: 6px; }
+    .aircraft-detail::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb), 0.3); border-radius: 3px; }
+
+    .ad-head { align-items: center; gap: 0.6rem; margin-bottom: 0.55rem; }
+    .ad-callsign {
+      font-size: 1.45rem;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      line-height: 1.1;
+      color: var(--ad-accent);
+      text-shadow: 0 0 14px color-mix(in srgb, var(--ad-accent) 55%, transparent);
+    }
+    .ad-callsign.alert { color: var(--accent-red); text-shadow: 0 0 14px rgba(255, 51, 51, 0.6); animation: ad-alert 1.2s ease-in-out infinite; }
+    .ad-sub { margin-top: 0.2rem; font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    .ad-close {
+      width: 2rem; height: 2rem; min-width: 2rem; min-height: 2rem;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: transform 0.25s, background 0.2s, border-color 0.2s;
+    }
+    .ad-close:hover { transform: rotate(90deg); background: rgba(255, 51, 51, 0.15); border-color: var(--accent-red); color: #fff; }
+
+    .ad-tag { padding: 0.12rem 0.55rem; background: rgba(var(--accent-rgb), 0.1); box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.15); }
+    .ad-tag.rare { background: linear-gradient(90deg, rgba(255, 176, 0, 0.22), rgba(255, 176, 0, 0.08)); box-shadow: 0 0 12px rgba(255, 176, 0, 0.3); }
+
+    .ad-actions { gap: 0.4rem; margin: 0.1rem 0 0.6rem; }
+    .ad-btn {
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(var(--accent-rgb), 0.25);
+      transition: transform 0.15s, background 0.2s, border-color 0.2s, box-shadow 0.2s;
+    }
+    .ad-btn:hover { background: rgba(var(--accent-rgb), 0.12); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }
+
+    .ad-photo {
+      position: relative;
+      height: 8.5rem;
+      margin-bottom: 0.6rem;
+      border-radius: 10px;
+      border-color: rgba(255, 255, 255, 0.08);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+    }
+    .ad-photo::after { content: ''; position: absolute; inset: auto 0 0 0; height: 45%; background: linear-gradient(to top, rgba(2, 8, 5, 0.85), transparent); pointer-events: none; }
+    .ad-photo img { transition: transform 0.6s ease; }
+    .ad-photo:hover img { transform: scale(1.06); }
+
+    .ad-lost { border-radius: 10px; background: rgba(255, 176, 0, 0.08); }
+
+    .ad-live, .ad-specs { gap: 0.4rem; }
+    .ad-stat {
+      position: relative;
+      padding: 0.4rem 0.55rem 0.4rem 0.7rem;
+      border-radius: 10px;
+      border-color: rgba(255, 255, 255, 0.06);
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01));
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .ad-stat::before { content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 3px; border-radius: 0 3px 3px 0; background: var(--ad-accent); opacity: 0.7; }
+    .ad-stat:hover { border-color: rgba(var(--accent-rgb), 0.35); transform: translateY(-1px); }
+    .ad-stat-label { margin-bottom: 0.1rem; font-size: 0.56rem; letter-spacing: 0.1em; }
+    .ad-stat-value { font-size: 0.88rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .ad-stat-value.up { text-shadow: 0 0 8px rgba(var(--accent-rgb), 0.45); }
+    .ad-stat-value.down, .ad-stat-value.alert { text-shadow: 0 0 8px rgba(255, 51, 51, 0.45); }
+
+    .ad-section { margin-top: 0.7rem; padding-top: 0.6rem; border-top-color: rgba(255, 255, 255, 0.07); }
+    .ad-section-title { font-size: 0.62rem; letter-spacing: 0.14em; }
+    .ad-section-title::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255, 176, 0, 0.35), transparent); }
+
+    .ad-profile {
+      margin-left: 0;
+      padding: 0.55rem 0.65rem;
+      border-left: 0;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.03);
+      box-shadow: inset 3px 0 0 var(--card-border);
+      transition: box-shadow 0.2s;
+    }
+    .aircraft-detail > .ad-profile:first-child { padding-top: 0.55rem; }
+    .ad-profile.conf-high { box-shadow: inset 3px 0 0 var(--accent-green); }
+    .ad-profile.conf-medium { box-shadow: inset 3px 0 0 var(--accent-military); }
+    .ad-profile.conf-low { box-shadow: inset 3px 0 0 var(--accent-red); }
+
+    .ad-route-row { align-items: baseline; padding: 0.2rem 0; margin-bottom: 0; border-bottom: 1px dashed rgba(255, 255, 255, 0.06); }
+    .ad-route-row:last-child { border-bottom: 0; }
+    .ad-route-label { color: var(--accent-military); opacity: 0.85; }
+
+    .ad-type-name { font-size: 1rem; letter-spacing: 0.02em; }
+    .ad-chip { padding: 0.08rem 0.5rem; background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.1); }
+    .ad-facts { list-style: none; margin-left: 0; }
+    .ad-facts li { position: relative; padding-left: 0.9rem; }
+    .ad-facts li::before { content: '\203A'; position: absolute; left: 0.1rem; color: var(--accent-military); font-weight: 800; }
+    .ad-retry { border-radius: 999px; }
+
+    @keyframes ad-flow { from { background-position: 0 0; } to { background-position: 200% 0; } }
+    @keyframes ad-alert { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+    @media (prefers-reduced-motion: reduce) {
+      .aircraft-detail::before, .ad-callsign.alert { animation: none; }
+      .ad-photo img, .ad-close, .ad-btn, .ad-stat { transition: none; }
+    }
