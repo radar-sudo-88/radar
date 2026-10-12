@@ -396,7 +396,14 @@
   }
 
   function togglePanel(force) {
-    S.panelOpen = typeof force === 'boolean' ? force : !S.panelOpen;
+    if (S.introPending) return;
+    const want = typeof force === 'boolean' ? force : !S.panelOpen;
+    if (want && !S.panelOpen && bootIntro()) {
+      S.introPending = true;
+      setTimeout(() => { S.introPending = false; togglePanel(true); }, 1500);
+      return;
+    }
+    S.panelOpen = want;
     const p = document.getElementById('skl-panel');
     if (p) {
       p.classList.toggle('open', S.panelOpen);
@@ -505,15 +512,15 @@
       '<div class="skl-card" style="--i:3"><h3>Badges ' + Object.keys(S.badges).length + '/' + BADGES.length + '</h3><div class="skl-badges">' + badges + '</div></div>';
   }
 
-  // Short radar-sweep splash, once per browser session. Skipped for reduced-motion users and on the
-  // localhost wall board (so a kiosk reload isn't interrupted); add ?intro=1 to force it.
+  // Short radar-sweep splash. Plays the first time the Ledger is opened in a browser session (never
+  // on page load), then the panel opens. Skipped for reduced-motion users; ?intro=1 replays it
+  // on every first open. Returns true if it played.
   function bootIntro() {
     try {
       const force = /[?&]intro=1\b/.test(location.search);
-      const kiosk = ['localhost', '127.0.0.1'].includes(location.hostname);
-      if (reducedMotion() || (!force && (kiosk || sessionStorage.getItem(LS + 'intro')))) return;
+      if (reducedMotion() || (!force && sessionStorage.getItem(LS + 'intro'))) return false;
       sessionStorage.setItem(LS + 'intro', '1');
-    } catch (e) { return; }
+    } catch (e) { return false; }
     ensureUI();
     const el = document.createElement('div');
     el.id = 'skl-boot';
@@ -523,11 +530,12 @@
       '<div class="t">Sky Ledger</div><div class="m">' + (S.desktop ? 'desktop mode \u00b7 press L' : 'touch mode \u00b7 compass ready') + '</div>';
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 2300);
+    return true;
   }
 
   function init() {
     if (typeof document === 'undefined') return;
-    const go = () => { ensureUI(); renderChip(); bootIntro(); };
+    const go = () => { ensureUI(); renderChip(); };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
     try { console.log('%cSky Ledger ' + SIGNATURE, 'color:#ffb000'); } catch (e) { /* ignore */ }
   }
