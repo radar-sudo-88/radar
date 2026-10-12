@@ -15,6 +15,14 @@
   const RAD = Math.PI / 180;
   const NM_FT = 6076.12;
 
+  // A "PC" = a fine, hovering pointer (mouse/trackpad) on a non-mobile user agent. Phones and
+  // tablets report coarse/no hover, so they fall through to the touch + compass experience.
+  function detectDesktop(env) {
+    env = env || {};
+    const mobileUA = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(env.ua || '');
+    return !!env.fineHover && !mobileUA;
+  }
+
   // ---------------------------------------------------------------- maths (pure)
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -183,8 +191,17 @@
   const S = {
     list: [], target: null, heading: null, pitch: null, compassOn: false,
     badges: load('badges', {}), claims: load('claims', {}), seen: load('seen', []),
-    seenSet: null, panelOpen: false, raf: 0,
+    seenSet: null, panelOpen: false, raf: 0, chipShown: false,
+    desktop: detectDesktop({
+      ua: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+      fineHover: typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches,
+    }),
   };
+
+  function reducedMotion() {
+    try { return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches; }
+    catch (e) { return false; }
+  }
 
   function station() {
     return (typeof userConfig !== 'undefined' && userConfig) ? userConfig : { lat: 52.9529, lon: -0.9547 };
@@ -313,13 +330,51 @@
   .skl-b.on{opacity:1;border-color:var(--accent-green,#00ff66)}
   .skl-b b{display:block;font-size:.76rem}
   .skl-b span{font-size:.68rem;opacity:.8}
-  .skl-note{font-size:.7rem;opacity:.7;margin-top:.25rem}`;
+  .skl-note{font-size:.7rem;opacity:.7;margin-top:.25rem}
+  .skl-desktop #skl-panel{width:min(26rem,calc(100vw - 1.2rem))}
+  .skl-desktop .skl-b{transition:transform .15s,border-color .15s}
+  .skl-desktop .skl-b:hover{transform:translateY(-2px);border-color:var(--accent-military,#ffb000)}
+  .skl-kbd{border:1px solid var(--accent-amber-dim,#7a5a00);border-radius:.3rem;padding:0 .35rem;font-size:.68rem}
+  @keyframes skl-pop{0%{opacity:0;transform:translateY(16px) scale(.9)}60%{opacity:1;transform:translateY(-3px) scale(1.01)}100%{opacity:1;transform:none}}
+  @keyframes skl-rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  @keyframes skl-ring{from{opacity:0;transform:rotate(-200deg) scale(.6)}to{opacity:1;transform:none}}
+  @keyframes skl-fill{from{width:0}}
+  @keyframes skl-ping{0%{box-shadow:0 0 0 0 rgba(255,176,0,.6)}100%{box-shadow:0 0 0 18px rgba(255,176,0,0)}}
+  @keyframes skl-chip{from{opacity:0;transform:translateX(-24px)}to{opacity:1;transform:none}}
+  #skl-panel.open{animation:skl-pop .42s cubic-bezier(.2,.9,.3,1.2) both;transform-origin:bottom right}
+  .skl-fresh .skl-card{animation:skl-rise .5s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0) * 80ms)}
+  .skl-fresh .skl-card svg{animation:skl-ring .9s cubic-bezier(.2,.8,.2,1) .15s both}
+  .skl-fresh .skl-bar>i{animation:skl-fill .9s ease-out .3s both}
+  .skl-fresh .skl-b.on{animation:skl-rise .4s both;animation-delay:calc(var(--j,0) * 45ms + .3s)}
+  #skl-btn.live{animation:skl-ping 1.8s infinite}
+  #skl-chip.in{animation:skl-chip .5s cubic-bezier(.2,.9,.3,1.2) both}
+  @media (prefers-reduced-motion:reduce){
+    #skl-panel.open,.skl-fresh .skl-card,.skl-fresh .skl-card svg,.skl-fresh .skl-bar>i,.skl-fresh .skl-b.on,
+    #skl-btn.live,#skl-chip.in{animation:none!important}
+  }
+  #skl-boot{position:fixed;inset:0;z-index:20000;pointer-events:none;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;background:radial-gradient(circle at 50% 50%,rgba(0,255,102,.1),rgba(2,6,3,.96) 70%);
+    animation:skl-boot-out .6s ease 1.5s forwards}
+  #skl-boot .r,#skl-boot .sw{position:absolute;width:min(70vmin,34rem);height:min(70vmin,34rem);border-radius:50%}
+  #skl-boot .r{border:1px solid rgba(0,255,102,.35);animation:skl-ringin .6s ease both}
+  #skl-boot .r:nth-child(1){--s:1}#skl-boot .r:nth-child(2){--s:.66;animation-delay:.12s}#skl-boot .r:nth-child(3){--s:.33;animation-delay:.24s}
+  #skl-boot .sw{background:conic-gradient(from 0deg,rgba(0,255,102,.55),rgba(0,255,102,0) 28%,rgba(0,255,102,0));animation:skl-sweep .75s linear 2}
+  #skl-boot .bl{position:absolute;width:8px;height:8px;border-radius:50%;background:#00ff66;animation:skl-blip 1.5s ease both}
+  #skl-boot .t{position:relative;font:700 1.1rem system-ui,sans-serif;color:#00ff66;text-transform:uppercase;
+    animation:skl-title .9s cubic-bezier(.2,.8,.2,1) .2s both}
+  #skl-boot .m{position:relative;margin-top:.5rem;font:.75rem system-ui,sans-serif;color:#7a5a00;animation:skl-title .9s ease .5s both}
+  @keyframes skl-ringin{from{opacity:0;transform:scale(calc(var(--s,1) * .4))}to{opacity:1;transform:scale(var(--s,1))}}
+  @keyframes skl-sweep{to{transform:rotate(360deg)}}
+  @keyframes skl-title{from{opacity:0;letter-spacing:.9em}to{opacity:1;letter-spacing:.3em}}
+  @keyframes skl-blip{0%,20%{opacity:0;transform:scale(.2)}40%{opacity:1;transform:scale(1.6)}100%{opacity:.15;transform:scale(1)}}
+  @keyframes skl-boot-out{to{opacity:0;visibility:hidden}}`;
 
   function ensureUI() {
     if (document.getElementById('skl-btn')) return;
     const style = document.createElement('style'); style.textContent = CSS; document.head.appendChild(style);
+    document.documentElement.classList.add(S.desktop ? 'skl-desktop' : 'skl-touch');
     const btn = document.createElement('button');
-    btn.id = 'skl-btn'; btn.type = 'button'; btn.title = 'Sky Ledger';
+    btn.id = 'skl-btn'; btn.type = 'button'; btn.title = S.desktop ? 'Sky Ledger (press L)' : 'Sky Ledger';
     btn.innerHTML = '\ud83d\udef0<span class="skl-dot"></span>';
     btn.addEventListener('click', () => togglePanel());
     const chip = document.createElement('button'); chip.id = 'skl-chip'; chip.type = 'button';
@@ -331,12 +386,26 @@
       if (e.target.closest('#skl-compass-go')) enableCompass();
     });
     document.body.append(btn, chip, panel);
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) return;
+      if (e.key === 'l' || e.key === 'L') togglePanel();
+      else if (e.key === 'Escape' && S.panelOpen) togglePanel(false);
+    });
   }
 
   function togglePanel(force) {
     S.panelOpen = typeof force === 'boolean' ? force : !S.panelOpen;
     const p = document.getElementById('skl-panel');
-    if (p) p.classList.toggle('open', S.panelOpen);
+    if (p) {
+      p.classList.toggle('open', S.panelOpen);
+      if (S.panelOpen) {
+        p.classList.add('skl-fresh');
+        clearTimeout(S.freshTimer);
+        S.freshTimer = setTimeout(() => p.classList.remove('skl-fresh'), 1400);
+      }
+    }
     if (S.panelOpen) renderPanel();
   }
 
@@ -355,7 +424,9 @@
       chip.style.display = 'block';
       chip.textContent = '\u2708 ' + callsign(t.ac) + ' overhead ' + etaText(t.eta.minutes) + ' \u00b7 ' + t.vis.label;
       btn.classList.add('live');
-    } else { chip.style.display = 'none'; btn.classList.remove('live'); }
+      if (!S.chipShown) { chip.classList.remove('in'); void chip.offsetWidth; chip.classList.add('in'); }
+      S.chipShown = true;
+    } else { chip.style.display = 'none'; btn.classList.remove('live'); S.chipShown = false; }
   }
 
   function compassSVG() {
@@ -414,34 +485,56 @@
         '<b>' + esc(t.vis.label) + '</b> \u00b7 visibility ' + t.vis.score + '/100 <span class="skl-note">(size, height and light only - not cloud)</span>'
       : 'No aircraft due directly overhead in the next 30 minutes.';
 
-    const compassBtn = S.compassOn ? '' :
+    const compassBtn = (S.compassOn || S.desktop) ? '' :
       '<button class="skl-go" id="skl-compass-go" type="button">Enable phone compass</button>';
 
-    const badges = BADGES.map((b) => '<div class="skl-b' + (S.badges[b.id] ? ' on' : '') + '"><b>' + esc(b.name) +
+    const badges = BADGES.map((b, j) => '<div class="skl-b' + (S.badges[b.id] ? ' on' : '') + '" style="--j:' + j + '"><b>' + esc(b.name) +
       '</b><span>' + esc(b.desc) + '</span></div>').join('');
 
     el.innerHTML =
-      '<div class="skl-head"><h3>Sky Ledger</h3><button class="skl-x" type="button" aria-label="Close">\u2715</button></div>' +
-      '<div class="skl-card"><h3>Overhead</h3>' + over + '</div>' +
-      '<div class="skl-card"><h3>Look this way</h3><div style="display:flex;gap:.6rem;align-items:center">' + compassSVG() +
+      '<div class="skl-head"><h3>Sky Ledger' + (S.desktop ? ' <span class="skl-kbd">L</span>' : '') + '</h3><button class="skl-x" type="button" aria-label="Close">\u2715</button></div>' +
+      '<div class="skl-card" style="--i:0"><h3>Overhead</h3>' + over + '</div>' +
+      '<div class="skl-card" style="--i:1"><h3>Look this way</h3><div style="display:flex;gap:.6rem;align-items:center">' + compassSVG() +
       '<div><div>' + esc(guidance()) + '</div>' + compassBtn +
-      '<div class="skl-note" id="skl-compass-note">Hold the phone upright, rear camera towards the sky. Wave it in a figure-8 if it drifts.</div></div></div></div>' +
-      '<div class="skl-card"><h3>Quarry of the day</h3><b>' + esc(q[1]) + '</b> (' + q[0] + ') \u00b7 ' +
+      '<div class="skl-note" id="skl-compass-note">' + (S.desktop
+        ? 'North-up view. Open this page on your phone for the live compass.'
+        : 'Hold the phone upright, rear camera towards the sky. Wave it in a figure-8 if it drifts.') + '</div></div></div></div>' +
+      '<div class="skl-card" style="--i:2"><h3>Quarry of the day</h3><b>' + esc(q[1]) + '</b> (' + q[0] + ') \u00b7 ' +
       (claimed ? 'claimed \u2713 ' + esc(claimed.cs) : 'still hunting') +
       '<div class="skl-note">Claim streak: ' + streak + ' day' + (streak === 1 ? '' : 's') + '</div></div>' +
-      '<div class="skl-card"><h3>Badges ' + Object.keys(S.badges).length + '/' + BADGES.length + '</h3><div class="skl-badges">' + badges + '</div></div>';
+      '<div class="skl-card" style="--i:3"><h3>Badges ' + Object.keys(S.badges).length + '/' + BADGES.length + '</h3><div class="skl-badges">' + badges + '</div></div>';
+  }
+
+  // Short radar-sweep splash, once per browser session. Skipped for reduced-motion users and on the
+  // localhost wall board (so a kiosk reload isn't interrupted); add ?intro=1 to force it.
+  function bootIntro() {
+    try {
+      const force = /[?&]intro=1\b/.test(location.search);
+      const kiosk = ['localhost', '127.0.0.1'].includes(location.hostname);
+      if (reducedMotion() || (!force && (kiosk || sessionStorage.getItem(LS + 'intro')))) return;
+      sessionStorage.setItem(LS + 'intro', '1');
+    } catch (e) { return; }
+    ensureUI();
+    const el = document.createElement('div');
+    el.id = 'skl-boot';
+    const blips = [[38, 30], [62, 58], [48, 70]].map((p) =>
+      '<i class="bl" style="left:' + p[0] + '%;top:' + p[1] + '%;animation-delay:' + (0.3 + p[0] / 100).toFixed(2) + 's"></i>').join('');
+    el.innerHTML = '<i class="r"></i><i class="r"></i><i class="r"></i><i class="sw"></i>' + blips +
+      '<div class="t">Sky Ledger</div><div class="m">' + (S.desktop ? 'desktop mode \u00b7 press L' : 'touch mode \u00b7 compass ready') + '</div>';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2300);
   }
 
   function init() {
     if (typeof document === 'undefined') return;
-    const go = () => { ensureUI(); renderChip(); };
+    const go = () => { ensureUI(); renderChip(); bootIntro(); };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
     try { console.log('%cSky Ledger ' + SIGNATURE, 'color:#ffb000'); } catch (e) { /* ignore */ }
   }
 
   const api = {
     tick, init, SIGNATURE,
-    _t: { overheadEta, sunElevation, visibility, quarryFor, streakOf, dateKey, rearHeading, rearElevation,
+    _t: { detectDesktop, overheadEta, sunElevation, visibility, quarryFor, streakOf, dateKey, rearHeading, rearElevation,
           smoothAngle, bearingDeg, offsetNM, BADGES, QUARRY_POOL },
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
