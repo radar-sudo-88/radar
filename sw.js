@@ -24,6 +24,7 @@ const SHELL = [
   'about.html',
   'styles.css',
   'app.js',
+  'signature.js',
   'manifest.webmanifest',
   'favicon.svg',
   'favicon.ico',
