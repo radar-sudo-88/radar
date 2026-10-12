@@ -307,6 +307,40 @@
     if (S.panelOpen) renderPanel();
   }
 
+  // ---- tap-a-plane animation: target-lock brackets + ping on the plane, a leader line drawn to the
+  // info panel, and the panel unfolding out of the direction the plane is in. app.js calls this from
+  // selectAircraft(); it never touches app state, only the DOM overlay and the panel's CSS class.
+
+  function onSelect(ac) {
+    if (typeof document === 'undefined' || reducedMotion()) return;
+    const box = document.getElementById('radarContainer'), panel = document.getElementById('aircraft-detail');
+    const pt = ac && ac.__pt;
+    if (!box || !panel || !pt || !isFinite(pt.x) || !isFinite(pt.y)) return;
+    const old = document.getElementById('skl-lock'); if (old) old.remove();
+
+    const bR = box.getBoundingClientRect(), pR = panel.getBoundingClientRect();
+    const px = pR.left - bR.left, py = pR.top - bR.top;
+    const ox = clamp((pt.x - px) / Math.max(pR.width, 1) * 100, -30, 130);
+    const oy = clamp((pt.y - py) / Math.max(pR.height, 1) * 100, -30, 130);
+    panel.style.transformOrigin = ox.toFixed(0) + '% ' + oy.toFixed(0) + '%';
+    panel.classList.remove('skl-unfold'); void panel.offsetWidth; panel.classList.add('skl-unfold');
+    clearTimeout(S.unfoldTimer);
+    S.unfoldTimer = setTimeout(() => { panel.classList.remove('skl-unfold'); panel.style.transformOrigin = ''; }, 1400);
+
+    const tx = clamp(pt.x, px, px + pR.width), ty = clamp(pt.y, py, py + pR.height);
+    const el = document.createElement('div');
+    el.id = 'skl-lock';
+    el.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + Math.round(bR.width) + ' ' + Math.round(bR.height) + '">' +
+      '<line class="ldr" pathLength="1" x1="' + pt.x.toFixed(1) + '" y1="' + pt.y.toFixed(1) + '" x2="' + tx.toFixed(1) + '" y2="' + ty.toFixed(1) +
+      '" stroke="#ffb000" stroke-width="1.5" stroke-dasharray="1" stroke-linecap="round"/>' +
+      '<g transform="translate(' + pt.x.toFixed(1) + ' ' + pt.y.toFixed(1) + ')">' +
+      '<circle class="png" r="10" fill="none" stroke="#00ff66" stroke-width="2"/>' +
+      '<path class="brk" d="M-16 -8V-16H-8M8 -16H16V-8M16 8V16H8M-8 16H-16V8" fill="none" stroke="#ffb000" stroke-width="2.2" stroke-linecap="round"/>' +
+      '</g></svg>';
+    box.appendChild(el);
+    setTimeout(() => el.remove(), 1700);
+  }
+
   // ---- compass (device orientation)
 
   function onOrient(e) {
@@ -388,7 +422,7 @@
   #skl-chip.in{animation:skl-chip .5s cubic-bezier(.2,.9,.3,1.2) both}
   @media (prefers-reduced-motion:reduce){
     #skl-panel.open,.skl-fresh .skl-card,.skl-fresh .skl-card svg,.skl-fresh .skl-bar>i,.skl-fresh .skl-b.on,
-    #skl-btn.live,#skl-chip.in,#skl-ach,#skl-ach .ic,#skl-ach .pt{animation:none!important}
+    #skl-btn.live,#skl-chip.in,#skl-ach,#skl-ach .ic,#skl-ach .pt,.skl-unfold,.skl-unfold>*,#skl-lock *{animation:none!important}
   }
   #skl-ach{position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:20001;pointer-events:none;text-align:center;
     min-width:15rem;max-width:calc(100vw - 2rem);background:rgba(3,7,4,.96);border:1px solid var(--accent-military,#ffb000);
@@ -414,6 +448,20 @@
   @keyframes skl-fx-flash{0%{filter:brightness(1)}50%{filter:brightness(2.4) drop-shadow(0 0 10px #ff3333)}}
   @keyframes skl-fx-glow{0%,100%{filter:none}50%{filter:drop-shadow(0 0 14px #ffb000)}}
   @keyframes skl-fx-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.35)}}
+  #skl-lock{position:absolute;inset:0;z-index:10001;pointer-events:none;overflow:hidden;animation:skl-lock-out .4s ease 1.2s forwards}
+  #skl-lock svg{width:100%;height:100%;display:block}
+  #skl-lock .brk{animation:skl-lock-in .65s cubic-bezier(.2,.9,.3,1.2) both}
+  #skl-lock .png{animation:skl-lock-ping .9s ease-out both}
+  #skl-lock .ldr{stroke-dasharray:1;animation:skl-lock-line .55s ease-out .2s both}
+  @keyframes skl-lock-in{from{opacity:0;transform:scale(2.8) rotate(90deg)}to{opacity:1;transform:none}}
+  @keyframes skl-lock-ping{from{opacity:.9;transform:scale(1)}to{opacity:0;transform:scale(4.5)}}
+  @keyframes skl-lock-line{from{stroke-dashoffset:1;opacity:1}to{stroke-dashoffset:0;opacity:.85}}
+  @keyframes skl-lock-out{to{opacity:0}}
+  .skl-unfold{animation:skl-unfold .55s cubic-bezier(.2,.9,.3,1.15) both}
+  .skl-unfold>*{animation:skl-ad-row .4s cubic-bezier(.2,.8,.2,1) both}
+  @keyframes skl-unfold{from{opacity:0;transform:scale(.5)}60%{opacity:1;transform:scale(1.025)}to{opacity:1;transform:none}}
+  @keyframes skl-ad-row{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  ${[1,2,3,4,5,6,7,8,9,10,11,12].map((n) => '.skl-unfold>*:nth-child(' + n + '){animation-delay:' + (0.18 + n * 0.05).toFixed(2) + 's}').join('\n  ')}
   #skl-boot{position:fixed;inset:0;z-index:20000;pointer-events:none;display:flex;align-items:center;justify-content:center;
     flex-direction:column;background:radial-gradient(circle at 50% 50%,rgba(0,255,102,.1),rgba(2,6,3,.96) 70%);
     animation:skl-boot-out .6s ease 1.5s forwards}
@@ -611,7 +659,7 @@
   }
 
   const api = {
-    tick, init, SIGNATURE,
+    tick, init, onSelect, SIGNATURE,
     _t: { detectDesktop, overheadEta, sunElevation, visibility, quarryFor, streakOf, dateKey, rearHeading, rearElevation,
           smoothAngle, bearingDeg, offsetNM, BADGES, QUARRY_POOL },
   };

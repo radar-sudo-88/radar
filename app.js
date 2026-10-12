@@ -3808,6 +3808,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       buildAircraftDetailPanel(ac);
       renderAircraftDetailLive();
       resetAircraftDetailIdleTimer();
+      if (window.SkyLedger && SkyLedger.onSelect) { try { SkyLedger.onSelect(ac); } catch (e) { /* cosmetic only */ } }
 
       // The route APIs are normally only queried for the scrollboard's target aircraft; look this
       // one up too. Cached, and a no-op for aircraft without a usable callsign.
