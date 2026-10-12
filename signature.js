@@ -161,21 +161,21 @@
   const HEAVY_TYPES = new Set(['B744', 'B748', 'A388', 'A124', 'A225', 'A346', 'B772', 'B77W', 'A359']);
 
   const BADGES = [
-    { id: 'first-light', name: 'First Light', desc: 'Log your first aircraft', test: (c) => c.seenCount >= 1 },
-    { id: 'rotor-head', name: 'Rotor Head', desc: 'Spot a helicopter', test: (c) => c.list.some((a) => a.category === 'A7') },
-    { id: 'khaki-hour', name: 'Khaki Hour', desc: 'Spot a military aircraft', test: (c) => c.list.some((a) => c.isMil(a)) },
-    { id: 'squawk-witness', name: 'Squawk Witness', desc: 'See a 7500, 7600 or 7700 squawk',
+    { id: 'first-light', icon: '\ud83c\udf05', fx: 'glow', name: 'First Light', desc: 'Log your first aircraft', test: (c) => c.seenCount >= 1 },
+    { id: 'rotor-head', icon: '\ud83d\ude81', fx: 'spin', name: 'Rotor Head', desc: 'Spot a helicopter', test: (c) => c.list.some((a) => a.category === 'A7') },
+    { id: 'khaki-hour', icon: '\ud83c\udf96\ufe0f', fx: 'bounce', name: 'Khaki Hour', desc: 'Spot a military aircraft', test: (c) => c.list.some((a) => c.isMil(a)) },
+    { id: 'squawk-witness', icon: '\ud83d\udea8', fx: 'flash', name: 'Squawk Witness', desc: 'See a 7500, 7600 or 7700 squawk',
       test: (c) => c.list.some((a) => ['7500', '7600', '7700'].includes(String(a.squawk))) },
-    { id: 'heavy-metal', name: 'Heavy Metal', desc: 'Spot a heavy jet',
+    { id: 'heavy-metal', icon: '\ud83c\udfcb\ufe0f', fx: 'shake', name: 'Heavy Metal', desc: 'Spot a heavy jet',
       test: (c) => c.list.some((a) => a.category === 'A5' || a.category === 'A6' || HEAVY_TYPES.has(String(a.t || '').toUpperCase())) },
-    { id: 'low-and-slow', name: 'Low & Slow', desc: 'Aircraft under 1,500 ft and 120 kt within 3 NM',
+    { id: 'low-and-slow', icon: '\ud83d\udc22', fx: 'bounce', name: 'Low & Slow', desc: 'Aircraft under 1,500 ft and 120 kt within 3 NM',
       test: (c) => c.list.some((a) => typeof a.alt_baro === 'number' && a.alt_baro < 1500 && Number(a.gs) < 120 &&
         typeof a.lat === 'number' && c.distNM(a) <= 3) },
-    { id: 'night-owl', name: 'Night Owl', desc: 'Log an aircraft between 01:00 and 04:00',
+    { id: 'night-owl', icon: '\ud83e\udd89', fx: 'glow', name: 'Night Owl', desc: 'Log an aircraft between 01:00 and 04:00',
       test: (c) => c.list.length > 0 && c.now.getHours() >= 1 && c.now.getHours() < 4 },
-    { id: 'quarry-hunter', name: 'Quarry Hunter', desc: 'Claim a Quarry of the day', test: (c) => c.claimCount >= 1 },
-    { id: 'seven-sevens', name: 'Seven Sevens', desc: 'Claim the Quarry 7 days in a row', test: (c) => c.streak >= 7 },
-    { id: 'triple-digits', name: 'Triple Digits', desc: 'Log 100 different aircraft', test: (c) => c.seenCount >= 100 },
+    { id: 'quarry-hunter', icon: '\ud83c\udfaf', fx: 'pulse', name: 'Quarry Hunter', desc: 'Claim a Quarry of the day', test: (c) => c.claimCount >= 1 },
+    { id: 'seven-sevens', icon: '7\ufe0f\u20e3', fx: 'spin', name: 'Seven Sevens', desc: 'Claim the Quarry 7 days in a row', test: (c) => c.streak >= 7 },
+    { id: 'triple-digits', icon: '\ud83d\udcaf', fx: 'shake', name: 'Triple Digits', desc: 'Log 100 different aircraft', test: (c) => c.seenCount >= 100 },
   ];
 
   // ---------------------------------------------------------------- storage
@@ -238,7 +238,7 @@
       if (hit) {
         S.claims[today] = { t: q[0], cs: callsign(hit), ts: Date.now() };
         save('claims', S.claims);
-        messages.push('Quarry claimed: ' + q[1] + ' (' + callsign(hit) + ')');
+        messages.push({ icon: '\ud83d\udee9\ufe0f', fx: 'pulse', title: 'Quarry claimed', name: q[1] + ' (' + callsign(hit) + ')', desc: 'Quarry of the day' });
       }
     }
 
@@ -251,9 +251,9 @@
       if (S.badges[b.id]) continue;
       let ok = false;
       try { ok = b.test(ctx); } catch (e) { ok = false; }
-      if (ok) { S.badges[b.id] = Date.now(); messages.push('Badge: ' + b.name); }
+      if (ok) { S.badges[b.id] = Date.now(); messages.push({ icon: b.icon, fx: b.fx, title: 'Badge unlocked', name: b.name, desc: b.desc }); }
     }
-    if (messages.length) { save('badges', S.badges); toast(messages.join('  \u00b7  ')); }
+    if (messages.length) { save('badges', S.badges); celebrate(messages); }
 
     // Overhead target = soonest pass within 2.5 NM of the viewer.
     const sunEl = sunElevation(now, st.lat, st.lon);
@@ -267,6 +267,44 @@
     S.target = best;
 
     scheduleRender();
+  }
+
+  // ---- achievement popups (queued so several unlocks play one after another)
+
+  function celebrate(items) {
+    S.achQueue = (S.achQueue || []).concat(items);
+    if (!S.achBusy) nextCelebration();
+  }
+
+  function nextCelebration() {
+    const it = (S.achQueue || []).shift();
+    if (!it || typeof document === 'undefined' || !document.body) { S.achBusy = false; return; }
+    // Many unlocks at once (e.g. a first visit): play this one, then fold the rest into one summary.
+    if (S.achQueue.length >= 2) {
+      const rest = S.achQueue;
+      S.achQueue = [{ icon: '\ud83c\udfc5', fx: 'pulse', title: 'More unlocked', name: '+' + rest.length + ' achievements',
+                      desc: rest.map((r) => r.name).join(' \u00b7 ') }];
+    }
+    S.achBusy = true;
+    const el = document.createElement('div');
+    el.id = 'skl-ach';
+    let pts = '';
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * 2 * Math.PI, r = 70 + (i % 3) * 22;
+      pts += '<i class="pt" style="--x:' + Math.round(Math.cos(a) * r) + 'px;--y:' + Math.round(Math.sin(a) * r) +
+             'px;background:' + (i % 2 ? '#ffb000' : '#00ff66') + ';animation-delay:' + (0.25 + (i % 4) * 0.04).toFixed(2) + 's"></i>';
+    }
+    el.innerHTML = pts + '<span class="ic fx-' + esc(it.fx || 'pulse') + '">' + it.icon + '</span><div class="k">' + esc(it.title) +
+      '</div><div class="n">' + esc(it.name) + '</div><div class="d">' + esc(it.desc || '') + '</div>';
+    document.body.appendChild(el);
+    setTimeout(() => { el.remove(); nextCelebration(); }, 2800);
+  }
+
+  function clearAchievements() {
+    S.badges = {}; S.claims = {}; S.seen = []; S.seenSet = null; S.achQueue = []; S.clearArmed = false;
+    try { ['badges', 'claims', 'seen'].forEach((k) => localStorage.removeItem(LS + k)); } catch (e) { /* ignore */ }
+    renderChip();
+    if (S.panelOpen) renderPanel();
   }
 
   // ---- compass (device orientation)
@@ -350,8 +388,32 @@
   #skl-chip.in{animation:skl-chip .5s cubic-bezier(.2,.9,.3,1.2) both}
   @media (prefers-reduced-motion:reduce){
     #skl-panel.open,.skl-fresh .skl-card,.skl-fresh .skl-card svg,.skl-fresh .skl-bar>i,.skl-fresh .skl-b.on,
-    #skl-btn.live,#skl-chip.in{animation:none!important}
+    #skl-btn.live,#skl-chip.in,#skl-ach,#skl-ach .ic,#skl-ach .pt{animation:none!important}
   }
+  #skl-ach{position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:20001;pointer-events:none;text-align:center;
+    min-width:15rem;max-width:calc(100vw - 2rem);background:rgba(3,7,4,.96);border:1px solid var(--accent-military,#ffb000);
+    border-radius:1rem;padding:.9rem 1.2rem;color:#cfe;font:.8rem/1.4 system-ui,sans-serif;box-shadow:0 0 28px rgba(255,176,0,.35);
+    animation:skl-ach-in .55s cubic-bezier(.2,.9,.3,1.3) both,skl-ach-out .5s ease 2.25s forwards}
+  #skl-ach .ic{display:block;font-size:2.4rem;line-height:1.2}
+  #skl-ach .k{font-size:.62rem;letter-spacing:.25em;text-transform:uppercase;color:var(--accent-military,#ffb000)}
+  #skl-ach .n{font-size:1.05rem;font-weight:700;color:#fff}
+  #skl-ach .d{opacity:.75;font-size:.72rem}
+  #skl-ach .pt{position:absolute;left:50%;top:38%;width:6px;height:6px;border-radius:50%;animation:skl-pt .9s ease-out both}
+  .fx-spin{animation:skl-fx-spin .9s cubic-bezier(.2,.8,.2,1) .3s both}
+  .fx-shake{animation:skl-fx-shake .7s ease .3s both}
+  .fx-bounce{animation:skl-fx-bounce .9s ease .3s both}
+  .fx-flash{animation:skl-fx-flash .8s steps(2,jump-none) .3s 3 both}
+  .fx-glow{animation:skl-fx-glow 1.2s ease .3s 2 both}
+  .fx-pulse{animation:skl-fx-pulse .6s ease .3s 3 both}
+  @keyframes skl-ach-in{from{opacity:0;transform:translateX(-50%) translateY(-34px) scale(.7)}to{opacity:1;transform:translateX(-50%)}}
+  @keyframes skl-ach-out{to{opacity:0;transform:translateX(-50%) translateY(-22px)}}
+  @keyframes skl-pt{from{opacity:1;transform:translate(0,0) scale(1)}to{opacity:0;transform:translate(var(--x),var(--y)) scale(.2)}}
+  @keyframes skl-fx-spin{from{transform:rotate(-360deg) scale(.3)}to{transform:none}}
+  @keyframes skl-fx-shake{0%,100%{transform:none}20%{transform:translateX(-8px) rotate(-8deg)}40%{transform:translateX(8px) rotate(8deg)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+  @keyframes skl-fx-bounce{0%{transform:translateY(-26px)}40%{transform:translateY(0)}60%{transform:translateY(-12px)}80%{transform:translateY(0)}100%{transform:none}}
+  @keyframes skl-fx-flash{0%{filter:brightness(1)}50%{filter:brightness(2.4) drop-shadow(0 0 10px #ff3333)}}
+  @keyframes skl-fx-glow{0%,100%{filter:none}50%{filter:drop-shadow(0 0 14px #ffb000)}}
+  @keyframes skl-fx-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.35)}}
   #skl-boot{position:fixed;inset:0;z-index:20000;pointer-events:none;display:flex;align-items:center;justify-content:center;
     flex-direction:column;background:radial-gradient(circle at 50% 50%,rgba(0,255,102,.1),rgba(2,6,3,.96) 70%);
     animation:skl-boot-out .6s ease 1.5s forwards}
@@ -384,6 +446,11 @@
     panel.addEventListener('click', (e) => {
       if (e.target.closest('.skl-x')) togglePanel(false);
       if (e.target.closest('#skl-compass-go')) enableCompass();
+      if (e.target.closest('#skl-clear')) {
+        if (S.clearArmed) { clearTimeout(S.clearTimer); clearAchievements(); return; }
+        S.clearArmed = true; renderPanel();
+        S.clearTimer = setTimeout(() => { S.clearArmed = false; if (S.panelOpen) renderPanel(); }, 3000);
+      }
     });
     document.body.append(btn, chip, panel);
     document.addEventListener('keydown', (e) => {
@@ -495,7 +562,7 @@
     const compassBtn = (S.compassOn || S.desktop) ? '' :
       '<button class="skl-go" id="skl-compass-go" type="button">Enable phone compass</button>';
 
-    const badges = BADGES.map((b, j) => '<div class="skl-b' + (S.badges[b.id] ? ' on' : '') + '" style="--j:' + j + '"><b>' + esc(b.name) +
+    const badges = BADGES.map((b, j) => '<div class="skl-b' + (S.badges[b.id] ? ' on' : '') + '" style="--j:' + j + '"><b>' + b.icon + ' ' + esc(b.name) +
       '</b><span>' + esc(b.desc) + '</span></div>').join('');
 
     el.innerHTML =
@@ -509,7 +576,10 @@
       '<div class="skl-card" style="--i:2"><h3>Quarry of the day</h3><b>' + esc(q[1]) + '</b> (' + q[0] + ') \u00b7 ' +
       (claimed ? 'claimed \u2713 ' + esc(claimed.cs) : 'still hunting') +
       '<div class="skl-note">Claim streak: ' + streak + ' day' + (streak === 1 ? '' : 's') + '</div></div>' +
-      '<div class="skl-card" style="--i:3"><h3>Badges ' + Object.keys(S.badges).length + '/' + BADGES.length + '</h3><div class="skl-badges">' + badges + '</div></div>';
+      '<div class="skl-card" style="--i:3"><h3>Badges ' + Object.keys(S.badges).length + '/' + BADGES.length + '</h3><div class="skl-badges">' + badges + '</div>' +
+      '<div style="margin-top:.5rem"><button class="skl-go" id="skl-clear" type="button">' +
+      (S.clearArmed ? 'Tap again to wipe everything' : 'Clear achievements') + '</button>' +
+      '<div class="skl-note">Resets badges, quarry claims, streak and your logged-aircraft count.</div></div></div>';
   }
 
   // Short radar-sweep splash. Plays the first time the Ledger is opened in a browser session (never
