@@ -2404,6 +2404,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         renderFlightBoard(shownAircraft());
         updateNearestScrollboard(shownAircraft());
         checkRareAircraft(liveAircraft);
+        if (window.SkyLedger) { try { SkyLedger.tick(liveAircraft); } catch (e) { /* add-on must never break the feed */ } }
         checkLinkedAircraft();
         refreshAircraftDetail();
         // Sightings from a followed aircraft's remote area aren't 'today at home'.
