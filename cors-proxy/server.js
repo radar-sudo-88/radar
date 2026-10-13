@@ -412,7 +412,9 @@ async function handlePointLookup(req, res, url, cors) {
   }
 
   const [, lat, lon, radius] = match;
-  const upstreamUrl = `${ADSBFI_UPSTREAM}/api/v3/lat/${lat}/lon/${lon}/dist/${radius}`;
+  // adsb.fi serves at most 250 NM; clamp so a bad/huge client value can't waste an upstream call.
+  const distNM = Math.min(Number(radius), 250);
+  const upstreamUrl = `${ADSBFI_UPSTREAM}/api/v3/lat/${lat}/lon/${lon}/dist/${distNM}`;
   const startedAt = Date.now();
 
   try {

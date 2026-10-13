@@ -143,6 +143,50 @@
     </div>
 
     <div class="st-group">
+      <div class="st-group-title">Tracks</div>
+      <div class="st-row">
+        <div class="st-label">On radar</div>
+        <div class="st-seg" data-setting="trackMode" role="group" aria-label="Tracks on the radar">
+          <button type="button" data-value="off">Off</button>
+          <button type="button" data-value="selected">Selected</button>
+          <button type="button" data-value="all">All</button>
+        </div>
+      </div>
+      <div class="st-row">
+        <div class="st-label">In AR</div>
+        <div class="st-seg" data-setting="arTrackMode" role="group" aria-label="Tracks in AR view">
+          <button type="button" data-value="off">Off</button>
+          <button type="button" data-value="selected">Selected</button>
+          <button type="button" data-value="all">All</button>
+        </div>
+      </div>
+      <div class="st-row">
+        <div class="st-label">Length</div>
+        <div class="st-seg" data-setting="trackLen" role="group" aria-label="Track length">
+          <button type="button" data-value="short">Short</button>
+          <button type="button" data-value="medium">Medium</button>
+          <button type="button" data-value="long">Long</button>
+        </div>
+      </div>
+      <div class="st-hint">Selected = just the aircraft you've tapped. Very busy scopes switch "All" to "Selected" automatically.</div>
+    </div>
+
+    <div class="st-group">
+      <div class="st-group-title">Range</div>
+      <div class="st-row">
+        <div class="st-label">Scope range</div>
+        <div class="st-seg st-seg-wrap" data-setting="radiusNM" role="group" aria-label="Scope range in nautical miles">
+          <button type="button" data-value="35">35</button>
+          <button type="button" data-value="60">60</button>
+          <button type="button" data-value="100">100</button>
+          <button type="button" data-value="150">150</button>
+          <button type="button" data-value="250">250 max</button>
+        </div>
+      </div>
+      <div class="st-hint">Nautical miles. 250 is the most the ADS-B feed returns. Wider ranges pull far more aircraft, so ranges above 100 refresh every 5 seconds, and the setting is saved per device: keep the Pi on 35.</div>
+    </div>
+
+    <div class="st-group">
       <div class="st-group-title">Filters</div>
       <div class="st-row">
         <div class="st-label">Operator</div>

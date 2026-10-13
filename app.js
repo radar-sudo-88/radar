@@ -33,8 +33,14 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // the panel. Every storage access is wrapped in try/catch: some browsers (private mode,
     // locked-down kiosk profiles) throw on localStorage.
     const SETTINGS_KEY = 'radarSettings';
+    // Track (trail) display and scope range. radiusNM is a string because the segmented controls
+    // compare against data-value attributes; 250 is the most the ADS-B feed will return.
+    const TRACK_MODES = ['off', 'selected', 'all'];
+    const TRACK_LENGTHS = { short: 20, medium: 60, long: 120 }; // points kept per aircraft
+    const RANGE_CHOICES = ['35', '60', '100', '150', '250'];
     const SETTINGS_DEFAULTS = {
       speed: 'kts', alt: 'ft', dist: 'nm', theme: 'green',
+      trackMode: 'all', arTrackMode: 'selected', trackLen: 'short', radiusNM: '35',
       rareAlerts: true, shareLocation: true, milOnly: false, showAirports: true,
       filterOperator: '', filterType: '', filterSquawk: '',
       filterAltMin: '', filterAltMax: '', filterSpeedMin: '', filterSpeedMax: ''
@@ -71,6 +77,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (has(ALT_UNITS, raw.alt)) out.alt = raw.alt;
       if (has(DIST_UNITS, raw.dist)) out.dist = raw.dist;
       if (has(THEMES, raw.theme)) out.theme = raw.theme;
+      if (TRACK_MODES.includes(raw.trackMode)) out.trackMode = raw.trackMode;
+      if (TRACK_MODES.includes(raw.arTrackMode)) out.arTrackMode = raw.arTrackMode;
+      if (has(TRACK_LENGTHS, raw.trackLen)) out.trackLen = raw.trackLen;
+      if (RANGE_CHOICES.includes(String(raw.radiusNM))) out.radiusNM = String(raw.radiusNM);
       ['rareAlerts', 'shareLocation', 'milOnly', 'showAirports'].forEach((k) => {
         if (typeof raw[k] === 'boolean') out[k] = raw[k];
       });
@@ -102,6 +112,19 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     function saveSettings() {
       try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
     }
+    // The scope range comes from the saved setting (per browser, so the Pi kiosk keeps its own
+    // value and a phone can use a wider one). Shared links deliberately don't carry it.
+    userConfig.radiusNM = Number(settings.radiusNM) || 35;
+    function trailMaxPoints() { return TRACK_LENGTHS[settings.trackLen] || 20; }
+    // 'all' tracks on a wide, busy scope (250 NM can be 500+ aircraft) is a lot of line drawing for a
+    // Pi, so past 250 aircraft it quietly drops to 'selected only'.
+    function effectiveTrackMode() {
+      const m = settings.trackMode;
+      if (m === 'all' && typeof liveAircraft !== 'undefined' && liveAircraft && liveAircraft.length > 250) return 'selected';
+      return m;
+    }
+    // Wider ranges return much bigger payloads, so poll them a little less often.
+    function basePollMs() { return userConfig.radiusNM > 100 ? 5000 : AIRCRAFT_POLL_MS; }
 
     // --- Unit formatting. Everything upstream (ADS-B) is knots / feet / nautical miles; these
     // convert at the last moment for display and for speech.
@@ -2227,8 +2250,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           ac.__pt = map.latLngToContainerPoint([ac.lat, ac.lon]);
         }
       });
+      const trkMode = effectiveTrackMode();
       Object.keys(aircraftTrails).forEach(hex => {
         const trail = aircraftTrails[hex];
+        if (trkMode === 'off' || (trkMode === 'selected' && hex !== selectedHex)) { trail.__pts = null; return; }
         trail.__pts = trail.map(p => map.latLngToContainerPoint([p.lat, p.lon]));
       });
     }
@@ -2251,7 +2276,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       }
 
       isFetching = true;
-      let nextPollDelay = AIRCRAFT_POLL_MS;
+      let nextPollDelay = basePollMs();
 
       // Single call to our own backend (server.js), same origin, no CORS involved.
       // The backend does its own upstream fetch + short-lived caching against
@@ -2316,8 +2341,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
                   t.__lastSeenAt = receivedAt;
                   const last = t[t.length - 1];
                   if (!last || Math.abs(last.lat - ac.lat) > 0.0005 || Math.abs(last.lon - ac.lon) > 0.0005) {
-                    t.push({ lat: ac.lat, lon: ac.lon });
-                    if (t.length > 20) t.shift();
+                    const altNum = Number(ac.alt_baro);
+                    t.push({ lat: ac.lat, lon: ac.lon, alt: Number.isFinite(altNum) ? altNum : null });
+                    while (t.length > trailMaxPoints()) t.shift();
                   }
                 });
 
@@ -2378,7 +2404,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         if (success) {
           consecutive429s = 0;
           pollBackoffUntil = 0;
-          nextPollDelay = AIRCRAFT_POLL_MS;
+          nextPollDelay = basePollMs();
         } else if (sawRateLimit) {
           consecutive429s++;
           // 15s, 30s, 60s, 120s, ... capped at 5 minutes.
@@ -2390,7 +2416,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           // A transient network/API error should not blank the map. Keep the last successful
           // aircraft state visible and try again on the normal 1-second cadence.
           updateUIState(false);
-          nextPollDelay = AIRCRAFT_POLL_MS;
+          nextPollDelay = basePollMs();
         }
       } finally {
         isFetching = false;
@@ -3022,17 +3048,21 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      Object.keys(aircraftTrails).forEach(hex => {
+      const trkMode = effectiveTrackMode();
+      if (trkMode !== 'off') Object.keys(aircraftTrails).forEach(hex => {
+        if (trkMode === 'selected' && hex !== selectedHex) return;
         const trail = aircraftTrails[hex];
-        const pts = trail.__pts;
+        let pts = trail.__pts;
+        if (!pts && map) pts = trail.__pts = trail.map(p => map.latLngToContainerPoint([p.lat, p.lon]));
         if (pts && pts.length > 1) {
+          const isSel = hex === selectedHex;
           ctx.beginPath();
           for (let i = 0; i < pts.length; i++) {
             if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
             else ctx.lineTo(pts[i].x, pts[i].y);
           }
-          ctx.strokeStyle = 'rgba(0, 191, 255, 0.3)';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = isSel ? accentRgba(0.85) : 'rgba(0, 191, 255, 0.3)';
+          ctx.lineWidth = isSel ? 2 : 1;
           ctx.stroke();
         }
       });
@@ -4475,14 +4505,31 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
     // Re-renders everything that shows a unit or a theme colour right now, instead of waiting for
     // the next poll to catch up.
+    let appliedRadiusNM = userConfig.radiusNM;
+    function applyRadiusSetting() {
+      const nm = Number(settings.radiusNM) || 35;
+      if (nm === appliedRadiusNM) return;
+      appliedRadiusNM = nm;
+      userConfig.radiusNM = nm;
+      if (radarCircle && map) {
+        radarCircle.setRadius(nm * 1852);
+        map.fitBounds(radarCircle.getBounds(), { padding: [0, 0] });
+        recomputeMapProjectionCache();
+        recomputeAircraftPixelCache();
+      }
+      if (feedStarted) scheduleAircraftPoll(0); // fetch the new range straight away
+    }
+
     function refreshForSettings() {
       applyTheme();
+      applyRadiusSetting();
       updateRadiusTexts();
       buildAltitudeLegend();
       renderAirportMarkers();
       if (radarCircle) radarCircle.setStyle({ color: currentTheme().accent, fillColor: currentTheme().accent });
       if (!feedStarted) return;
       try {
+        recomputeAircraftPixelCache();
         renderStaticScopeLayer();
         renderFlightBoard(shownAircraft());
         updateNearestScrollboard(shownAircraft());

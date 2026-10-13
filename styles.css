@@ -1460,3 +1460,7 @@
       .aircraft-detail::before, .ad-callsign.alert { animation: none; }
       .ad-photo img, .ad-close, .ad-btn, .ad-stat { transition: none; }
     }
+
+    .st-seg-wrap { flex-wrap: wrap; }
+    .st-seg-wrap button { flex: 1 1 28%; }
+    .st-hint { margin: 0.2rem 0 0.1rem; font-size: 0.68rem; line-height: 1.35; color: var(--text-dim); }
