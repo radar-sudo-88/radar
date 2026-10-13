@@ -392,18 +392,18 @@
   // ---- UI
 
   const CSS = `
-  #skl-btn{position:fixed;right:.6rem;bottom:2.6rem;z-index:10002;background:var(--btn-bg,rgba(3,7,4,.75));
+  #skl-btn{position:absolute;right:.6rem;bottom:.6rem;z-index:10002;background:var(--btn-bg,rgba(3,7,4,.75));
     border:1px solid var(--accent-amber-dim,#7a5a00);color:var(--accent-military,#ffb000);font-size:1rem;line-height:1;
     padding:.45rem .5rem;border-radius:50%;cursor:pointer}
   #skl-btn:hover{border-color:var(--accent-military,#ffb000)}
   #skl-btn .skl-dot{position:absolute;top:-2px;right:-2px;width:9px;height:9px;border-radius:50%;
     background:var(--accent-green,#00ff66);display:none}
   #skl-btn.live .skl-dot{display:block}
-  #skl-chip{position:fixed;left:.6rem;bottom:2.6rem;z-index:10002;max-width:calc(100vw - 4.5rem);display:none;
+  #skl-chip{position:absolute;left:.6rem;top:.6rem;z-index:10002;max-width:calc(100% - 5rem);display:none;
     background:var(--btn-bg,rgba(3,7,4,.85));border:1px solid var(--accent-green,#00ff66);color:var(--accent-green,#00ff66);
     font:600 .78rem/1.3 system-ui,sans-serif;padding:.4rem .65rem;border-radius:.6rem;cursor:pointer}
-  #skl-panel{position:fixed;right:.6rem;bottom:5.2rem;z-index:10005;width:min(22rem,calc(100vw - 1.2rem));
-    max-height:calc(100vh - 7rem);overflow:auto;display:none;background:rgba(3,7,4,.96);color:#cfe;
+  #skl-panel{position:absolute;right:.6rem;bottom:3.2rem;z-index:10005;width:min(22rem,calc(100% - 1.2rem));
+    max-height:calc(100% - 4rem);overflow:auto;display:none;background:rgba(3,7,4,.96);color:#cfe;
     border:1px solid var(--accent-amber-dim,#7a5a00);border-radius:.8rem;padding:.8rem;font:.8rem/1.4 system-ui,sans-serif}
   #skl-panel.open{display:block}
   #skl-panel h3{margin:.1rem 0 .4rem;font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-military,#ffb000)}
@@ -520,7 +520,8 @@
         S.clearTimer = setTimeout(() => { S.clearArmed = false; if (S.panelOpen) renderPanel(); }, 3000);
       }
     });
-    document.body.append(btn, chip, panel);
+    // Live inside the radar area (not fixed to the screen) so they never cover the footer's aircraft photo.
+    (document.getElementById('radarContainer') || document.body).append(btn, chip, panel);
     document.addEventListener('keydown', (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = e.target && e.target.tagName;
