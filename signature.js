@@ -217,6 +217,7 @@
 
   function tick(list) {
     S.list = Array.isArray(list) ? list : [];
+    S.tickAt = Date.now();
     const st = station(), now = new Date(), today = dateKey(now);
     const mil = typeof isMilitary === 'function' ? isMilitary : () => false;
 
@@ -371,22 +372,159 @@
     scheduleRender();
   }
 
+  // Shared by the compass and the AR view. iOS only allows the permission prompt inside a tap,
+  // so callers must invoke this first, straight from the click handler.
+  async function startSensors(what) {
+    if (S.sensorsOn) return;
+    if (!window.isSecureContext) throw new Error((what || 'Compass') + ' needs HTTPS (or localhost).');
+    if (typeof DeviceOrientationEvent === 'undefined') throw new Error('No orientation sensor in this browser.');
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r !== 'granted') throw new Error('Motion access was denied.');
+    }
+    window.addEventListener('deviceorientationabsolute', onOrient, true);
+    window.addEventListener('deviceorientation', onOrient, true);
+    S.sensorsOn = true;
+    S.compassOn = true;
+  }
+
   async function enableCompass() {
     const status = document.getElementById('skl-compass-note');
-    try {
-      if (!window.isSecureContext) throw new Error('Compass needs HTTPS (or localhost).');
-      if (typeof DeviceOrientationEvent === 'undefined') throw new Error('No orientation sensor in this browser.');
-      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-        const r = await DeviceOrientationEvent.requestPermission();
-        if (r !== 'granted') throw new Error('Motion access was denied.');
-      }
-      window.addEventListener('deviceorientationabsolute', onOrient, true);
-      window.addEventListener('deviceorientation', onOrient, true);
-      S.compassOn = true;
-      renderPanel();
-    } catch (err) {
-      if (status) status.textContent = err.message || 'Could not start the compass.';
+    try { await startSensors('Compass'); renderPanel(); }
+    catch (err) { if (status) status.textContent = err.message || 'Could not start the compass.'; }
+  }
+
+  // ---- AR sky view: rear camera with labels pinned to the aircraft around you.
+  // Orientation comes from the same sensors as the compass. Accuracy is limited by the phone's
+  // compass and by the assumed camera field of view, so there are nudge/zoom controls (saved).
+
+  const AR = { on: false, stream: null, raf: 0, labels: new Map(), hFov: Number(load('arFov', 50)) || 50, off: Number(load('arOff', 0)) || 0 };
+
+  // Screen position of an aircraft for a camera at the viewer pointing at (heading, pitch).
+  // Uses a proper rotation (not a flat az/el mapping) so it stays right when looking steeply up.
+  function project(pos, alt, uLat, uLon, heading, pitch, hFovDeg, W, H) {
+    const o = offsetNM(uLat, uLon, pos.lat, pos.lon);
+    const d = Math.hypot(o.x, o.y);
+    if (d < 0.05) return null;
+    const hgt = alt / NM_FT - (d * d) / (2 * 3440);              // earth-curvature drop
+    const b = Math.atan2(o.x, o.y), e = Math.atan2(hgt, d);
+    const t = [Math.cos(e) * Math.sin(b), Math.cos(e) * Math.cos(b), Math.sin(e)];
+    const h = heading * RAD, p = pitch * RAD;
+    const f = [Math.cos(p) * Math.sin(h), Math.cos(p) * Math.cos(h), Math.sin(p)];
+    const r = [Math.cos(h), -Math.sin(h), 0];
+    const u = [-Math.sin(p) * Math.sin(h), -Math.sin(p) * Math.cos(h), Math.cos(p)];
+    const dot = (a, c) => a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
+    const zc = dot(t, f);
+    if (zc <= 0.05) return null;                                  // behind the camera
+    const tanH = Math.tan(hFovDeg * RAD / 2), tanV = tanH * (H / W);
+    return { x: W / 2 + (dot(t, r) / zc / tanH) * (W / 2), y: H / 2 - (dot(t, u) / zc / tanV) * (H / 2),
+             distNM: d, elev: e / RAD };
+  }
+
+  // Dead-reckon from the last feed position so labels glide instead of jumping every poll.
+  function extrapolate(a, now) {
+    const dt = clamp((now - (S.tickAt || now)) / 1000 + (Number(a.seen_pos) || 0), 0, 30);
+    const nm = (Number(a.gs) || 0) * dt / 3600, trk = (Number(a.track) || 0) * RAD;
+    return { lat: a.lat + (nm * Math.cos(trk)) / 60,
+             lon: a.lon + (nm * Math.sin(trk)) / 60 / Math.cos(a.lat * RAD) };
+  }
+
+  function arLabelText(a, distNM) {
+    const alt = airborneAlt(a) || 0;
+    return { l1: callsign(a), l2: (a.t || '') + (a.t ? ' \u00b7 ' : '') + Math.round(alt / 100) * 100 + ' ft',
+             l3: distNM.toFixed(1) + ' NM \u00b7 ' + Math.round(Number(a.gs) || 0) + ' kt' };
+  }
+
+  function arFrame() {
+    const root = document.getElementById('skl-ar');
+    if (!AR.on || !root) { AR.on = false; return; }
+    AR.raf = requestAnimationFrame(arFrame);
+    const W = root.clientWidth || window.innerWidth, H = root.clientHeight || window.innerHeight;
+    const lay = root.querySelector('.ar-lbls'), stat = document.getElementById('ar-stat');
+    if (S.heading === null || S.pitch === null) {
+      stat.textContent = 'Waiting for the compass \u2014 wave the phone in a figure-8.';
+      return;
     }
+    const st = station(), now = Date.now(), hd = (S.heading + AR.off + 360) % 360;
+    const cand = [];
+    for (const a of S.list) {
+      const alt = airborneAlt(a);
+      if (alt === null || typeof a.lat !== 'number' || typeof a.lon !== 'number') continue;
+      const pr = project(extrapolate(a, now), alt, st.lat, st.lon, hd, S.pitch, AR.hFov, W, H);
+      if (!pr || pr.distNM > 80 || pr.x < -60 || pr.x > W + 60 || pr.y < -60 || pr.y > H + 60) continue;
+      cand.push({ a, pr });
+    }
+    cand.sort((p, q) => p.pr.distNM - q.pr.distNM);
+    const tgtHex = S.target ? S.target.ac.hex : null, keep = new Set();
+    for (const c of cand.slice(0, 14)) {
+      const hex = String(c.a.hex || callsign(c.a));
+      keep.add(hex);
+      let el = AR.labels.get(hex);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'arl';
+        el.innerHTML = '<i class="rt"></i><div class="tx"><b></b><span class="l2"></span><span class="x"></span></div>';
+        el.addEventListener('click', () => el.classList.toggle('open'));
+        lay.appendChild(el); AR.labels.set(hex, el);
+      }
+      el.style.transform = 'translate(' + c.pr.x.toFixed(1) + 'px,' + c.pr.y.toFixed(1) + 'px)';
+      el.classList.toggle('flip', c.pr.x > W - 160);
+      el.classList.toggle('tgt', hex === tgtHex);
+      const tx = arLabelText(c.a, c.pr.distNM);
+      if (el._k !== tx.l2 + tx.l3) {
+        el._k = tx.l2 + tx.l3;
+        el.querySelector('b').textContent = tx.l1;
+        el.querySelector('.l2').textContent = tx.l2;
+        el.querySelector('.x').textContent = tx.l3;
+      }
+    }
+    for (const [hex, el] of AR.labels) if (!keep.has(hex)) { el.remove(); AR.labels.delete(hex); }
+    stat.textContent = (cand.length ? cand.length + ' in view \u00b7 ' : 'Nothing in view \u00b7 ') + guidance();
+  }
+
+  async function startAR() {
+    const note = document.getElementById('skl-compass-note');
+    try {
+      if (AR.on) return;
+      await startSensors('AR');                                   // first await: keeps the iOS tap permission
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('No camera access in this browser.');
+      AR.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    } catch (err) {
+      if (note) note.textContent = (err && err.message) || 'Could not start AR.';
+      return;
+    }
+    togglePanel(false);
+    const root = document.createElement('div');
+    root.id = 'skl-ar';
+    root.innerHTML = '<video playsinline muted autoplay></video><div class="ar-lbls"></div><i class="ar-cross"></i>' +
+      '<div class="ar-top"><b>AR sky view</b><button class="ar-x" type="button" aria-label="Close AR">\u2715</button></div>' +
+      '<div class="ar-bot"><div id="ar-stat"></div><div class="ar-ctl">' +
+      '<button type="button" data-a="off-" title="Turn labels left">\u25c0</button><button type="button" data-a="off+" title="Turn labels right">\u25b6</button>' +
+      '<button type="button" data-a="fov-" title="Narrower view">\uff0b</button><button type="button" data-a="fov+" title="Wider view">\uff0d</button></div></div>';
+    const video = root.querySelector('video');
+    video.srcObject = AR.stream;
+    try { const pr = video.play(); if (pr && pr.catch) pr.catch(() => {}); } catch (e) { /* autoplay attr covers it */ }
+    root.addEventListener('click', (e) => {
+      if (e.target.closest('.ar-x')) { closeAR(); return; }
+      const b = e.target.closest('[data-a]');
+      if (!b) return;
+      const a = b.dataset.a;
+      if (a === 'off-') AR.off -= 2; else if (a === 'off+') AR.off += 2;
+      else if (a === 'fov-') AR.hFov = clamp(AR.hFov - 3, 30, 90); else if (a === 'fov+') AR.hFov = clamp(AR.hFov + 3, 30, 90);
+      AR.off = clamp(AR.off, -40, 40);
+      save('arOff', AR.off); save('arFov', AR.hFov);
+    });
+    document.body.appendChild(root);
+    AR.on = true;
+    AR.raf = requestAnimationFrame(arFrame);
+  }
+
+  function closeAR() {
+    AR.on = false;
+    cancelAnimationFrame(AR.raf);
+    if (AR.stream) { AR.stream.getTracks().forEach((t) => t.stop()); AR.stream = null; }
+    AR.labels.clear();
+    const root = document.getElementById('skl-ar'); if (root) root.remove();
   }
 
   // ---- UI
@@ -399,7 +537,7 @@
   #skl-btn .skl-dot{position:absolute;top:-2px;right:-2px;width:9px;height:9px;border-radius:50%;
     background:var(--accent-green,#00ff66);display:none}
   #skl-btn.live .skl-dot{display:block}
-  #skl-chip{position:absolute;left:.6rem;top:.6rem;z-index:10002;max-width:calc(100% - 5rem);display:none;
+  #skl-chip{position:absolute;left:0;right:0;margin:0 auto;width:fit-content;top:.6rem;z-index:10002;max-width:calc(100% - 5rem);display:none;
     background:var(--btn-bg,rgba(3,7,4,.85));border:1px solid var(--accent-green,#00ff66);color:var(--accent-green,#00ff66);
     font:600 .78rem/1.3 system-ui,sans-serif;padding:.4rem .65rem;border-radius:.6rem;cursor:pointer}
   #skl-panel{position:absolute;right:.6rem;bottom:3.2rem;z-index:10005;width:min(22rem,calc(100% - 1.2rem));
@@ -428,7 +566,7 @@
   @keyframes skl-ring{from{opacity:0;transform:rotate(-200deg) scale(.6)}to{opacity:1;transform:none}}
   @keyframes skl-fill{from{width:0}}
   @keyframes skl-ping{0%{box-shadow:0 0 0 0 rgba(255,176,0,.6)}100%{box-shadow:0 0 0 18px rgba(255,176,0,0)}}
-  @keyframes skl-chip{from{opacity:0;transform:translateX(-24px)}to{opacity:1;transform:none}}
+  @keyframes skl-chip{from{opacity:0;transform:translateY(-18px)}to{opacity:1;transform:none}}
   #skl-panel.open{animation:skl-pop .42s cubic-bezier(.2,.9,.3,1.2) both;transform-origin:bottom right}
   .skl-fresh .skl-card{animation:skl-rise .5s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0) * 80ms)}
   .skl-fresh .skl-card svg{animation:skl-ring .9s cubic-bezier(.2,.8,.2,1) .15s both}
@@ -438,8 +576,33 @@
   #skl-chip.in{animation:skl-chip .5s cubic-bezier(.2,.9,.3,1.2) both}
   @media (prefers-reduced-motion:reduce){
     #skl-panel.open,.skl-fresh .skl-card,.skl-fresh .skl-card svg,.skl-fresh .skl-bar>i,.skl-fresh .skl-b.on,
-    #skl-btn.live,#skl-chip.in,#skl-ach,#skl-ach .ic,#skl-ach .pt,#skl-scrim,.skl-unfold,.skl-unfold>*,#skl-lock *{animation:none!important}
+    #skl-btn.live,#skl-chip.in,#skl-ach,#skl-ach .ic,#skl-ach .pt,#skl-scrim,.arl.tgt .rt,.skl-unfold,.skl-unfold>*,#skl-lock *{animation:none!important}
   }
+  #skl-ar{position:fixed;inset:0;z-index:20002;background:#000;overflow:hidden;font:.8rem/1.3 system-ui,sans-serif;color:#fff;touch-action:none}
+  #skl-ar video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  #skl-ar .ar-lbls{position:absolute;inset:0;overflow:hidden}
+  #skl-ar .ar-cross{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;opacity:.55;
+    background:linear-gradient(#fff,#fff) center/1px 100% no-repeat,linear-gradient(#fff,#fff) center/100% 1px no-repeat}
+  #skl-ar .ar-top{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;
+    padding:calc(.6rem + env(safe-area-inset-top,0px)) .8rem .8rem;background:linear-gradient(rgba(0,0,0,.7),transparent);color:#ffb000}
+  #skl-ar .ar-x{background:rgba(0,0,0,.5);border:1px solid #ffb000;color:#ffb000;border-radius:50%;width:2.1rem;height:2.1rem;font-size:1rem;cursor:pointer}
+  #skl-ar .ar-bot{position:absolute;bottom:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;gap:.6rem;
+    padding:.9rem .8rem calc(.8rem + env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,rgba(0,0,0,.75));font-size:.72rem}
+  #skl-ar .ar-ctl{display:flex;gap:.3rem;flex-shrink:0}
+  #skl-ar .ar-ctl button{background:rgba(0,0,0,.55);border:1px solid #7a5a00;color:#ffb000;border-radius:.4rem;width:2.1rem;height:2.1rem;font-size:.9rem;cursor:pointer}
+  .arl{position:absolute;left:0;top:0;will-change:transform;cursor:pointer}
+  .arl .rt{position:absolute;left:-10px;top:-10px;width:20px;height:20px;border:2px solid #00ff66;border-radius:50%;box-shadow:0 0 10px #00ff66}
+  .arl .tx{position:absolute;left:16px;top:-16px;white-space:nowrap;background:rgba(0,0,0,.6);border:1px solid rgba(0,255,102,.55);
+    border-radius:.45rem;padding:.2rem .45rem;font-size:.7rem;line-height:1.25;text-shadow:0 1px 2px #000}
+  .arl.flip .tx{left:auto;right:16px}
+  .arl .tx b{display:block;color:#00ff66;font-size:.78rem}
+  .arl .tx span{display:block;opacity:.9}
+  .arl .tx .x{display:none}
+  .arl.open .tx .x{display:block}
+  .arl.tgt .rt{border-color:#ffb000;box-shadow:0 0 16px #ffb000;animation:skl-ar-pulse 1.1s ease-in-out infinite}
+  .arl.tgt .tx{border-color:#ffb000}
+  .arl.tgt .tx b{color:#ffb000}
+  @keyframes skl-ar-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.35)}}
   #skl-scrim{position:fixed;inset:0;z-index:20000;pointer-events:none;background:rgba(0,0,0,.85);animation:skl-scrim-in .35s ease both}
   #skl-scrim.out{animation:skl-scrim-out .35s ease both}
   @keyframes skl-scrim-in{from{opacity:0}to{opacity:1}}
@@ -514,6 +677,7 @@
     panel.addEventListener('click', (e) => {
       if (e.target.closest('.skl-x')) togglePanel(false);
       if (e.target.closest('#skl-compass-go')) enableCompass();
+      if (e.target.closest('#skl-ar-go')) startAR();
       if (e.target.closest('#skl-clear')) {
         if (S.clearArmed) { clearTimeout(S.clearTimer); clearAchievements(); return; }
         S.clearArmed = true; renderPanel();
@@ -527,6 +691,7 @@
       const tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) return;
       if (e.key === 'l' || e.key === 'L') togglePanel();
+      else if (e.key === 'Escape' && AR.on) closeAR();
       else if (e.key === 'Escape' && S.panelOpen) togglePanel(false);
     });
   }
@@ -628,8 +793,9 @@
         '<b>' + esc(t.vis.label) + '</b> \u00b7 visibility ' + t.vis.score + '/100 <span class="skl-note">(size, height and light only - not cloud)</span>'
       : 'No aircraft due directly overhead in the next 30 minutes.';
 
-    const compassBtn = (S.compassOn || S.desktop) ? '' :
-      '<button class="skl-go" id="skl-compass-go" type="button">Enable phone compass</button>';
+    const compassBtn = ((S.compassOn || S.desktop) ? '' :
+      '<button class="skl-go" id="skl-compass-go" type="button">Enable phone compass</button> ') +
+      (S.desktop ? '' : '<button class="skl-go" id="skl-ar-go" type="button">\ud83d\udcf7 Open AR view</button>');
 
     const badges = BADGES.map((b, j) => '<div class="skl-b' + (S.badges[b.id] ? ' on' : '') + '" style="--j:' + j + '"><b>' + b.icon + ' ' + esc(b.name) +
       '</b><span>' + esc(b.desc) + '</span></div>').join('');
@@ -680,8 +846,8 @@
   }
 
   const api = {
-    tick, init, onSelect, SIGNATURE,
-    _t: { detectDesktop, overheadEta, sunElevation, visibility, quarryFor, streakOf, dateKey, rearHeading, rearElevation,
+    tick, init, onSelect, startAR, closeAR, SIGNATURE,
+    _t: { project, extrapolate, detectDesktop, overheadEta, sunElevation, visibility, quarryFor, streakOf, dateKey, rearHeading, rearElevation,
           smoothAngle, bearingDeg, offsetNM, BADGES, QUARRY_POOL },
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
