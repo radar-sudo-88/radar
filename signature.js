@@ -276,9 +276,25 @@
     if (!S.achBusy) nextCelebration();
   }
 
+  // Black-out behind the achievement popups so they read clearly; it stays up for a whole queue
+  // (no flicker between popups) and fades out when the last one finishes.
+  function setScrim(on) {
+    if (typeof document === 'undefined' || !document.body) return;
+    let el = document.getElementById('skl-scrim');
+    clearTimeout(S.scrimTimer);
+    if (on) {
+      if (!el) { el = document.createElement('div'); el.id = 'skl-scrim'; document.body.appendChild(el); }
+      el.classList.remove('out');
+    } else if (el) {
+      el.classList.add('out');
+      S.scrimTimer = setTimeout(() => el.remove(), 400);
+    }
+  }
+
   function nextCelebration() {
     const it = (S.achQueue || []).shift();
-    if (!it || typeof document === 'undefined' || !document.body) { S.achBusy = false; return; }
+    if (!it || typeof document === 'undefined' || !document.body) { S.achBusy = false; setScrim(false); return; }
+    setScrim(true);
     // Many unlocks at once (e.g. a first visit): play this one, then fold the rest into one summary.
     if (S.achQueue.length >= 2) {
       const rest = S.achQueue;
@@ -422,8 +438,12 @@
   #skl-chip.in{animation:skl-chip .5s cubic-bezier(.2,.9,.3,1.2) both}
   @media (prefers-reduced-motion:reduce){
     #skl-panel.open,.skl-fresh .skl-card,.skl-fresh .skl-card svg,.skl-fresh .skl-bar>i,.skl-fresh .skl-b.on,
-    #skl-btn.live,#skl-chip.in,#skl-ach,#skl-ach .ic,#skl-ach .pt,.skl-unfold,.skl-unfold>*,#skl-lock *{animation:none!important}
+    #skl-btn.live,#skl-chip.in,#skl-ach,#skl-ach .ic,#skl-ach .pt,#skl-scrim,.skl-unfold,.skl-unfold>*,#skl-lock *{animation:none!important}
   }
+  #skl-scrim{position:fixed;inset:0;z-index:20000;pointer-events:none;background:rgba(0,0,0,.85);animation:skl-scrim-in .35s ease both}
+  #skl-scrim.out{animation:skl-scrim-out .35s ease both}
+  @keyframes skl-scrim-in{from{opacity:0}to{opacity:1}}
+  @keyframes skl-scrim-out{from{opacity:1}to{opacity:0}}
   #skl-ach{position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:20001;pointer-events:none;text-align:center;
     min-width:15rem;max-width:calc(100vw - 2rem);background:rgba(3,7,4,.96);border:1px solid var(--accent-military,#ffb000);
     border-radius:1rem;padding:.9rem 1.2rem;color:#cfe;font:.8rem/1.4 system-ui,sans-serif;box-shadow:0 0 28px rgba(255,176,0,.35);
@@ -463,7 +483,7 @@
   @keyframes skl-ad-row{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   ${[1,2,3,4,5,6,7,8,9,10,11,12].map((n) => '.skl-unfold>*:nth-child(' + n + '){animation-delay:' + (0.18 + n * 0.05).toFixed(2) + 's}').join('\n  ')}
   #skl-boot{position:fixed;inset:0;z-index:20000;pointer-events:none;display:flex;align-items:center;justify-content:center;
-    flex-direction:column;background:radial-gradient(circle at 50% 50%,rgba(0,255,102,.1),rgba(2,6,3,.96) 70%);
+    flex-direction:column;background:radial-gradient(circle at 50% 50%,rgba(0,255,102,.09),rgba(0,255,102,0) 60%),#000;
     animation:skl-boot-out .6s ease 1.5s forwards}
   #skl-boot .r,#skl-boot .sw{position:absolute;width:min(70vmin,34rem);height:min(70vmin,34rem);border-radius:50%}
   #skl-boot .r{border:1px solid rgba(0,255,102,.35);animation:skl-ringin .6s ease both}
