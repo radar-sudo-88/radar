@@ -474,6 +474,8 @@
       color: var(--text-dim);
       padding: 0.15rem 0 0.3rem;
     }
+    .site-credit a { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+    .site-credit a:hover { color: var(--text-main); }
 
     .scrollboard {
       width: 100%;
@@ -1201,6 +1203,15 @@
       cursor: pointer;
     }
     .st-btn.primary { flex: 1; border-color: var(--accent-green); background: rgba(var(--accent-rgb), 0.1); }
+    .bmc-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 0.5rem;
+      text-decoration: none;
+      border-color: #ffdd00;
+    }
+    .bmc-btn:hover { background: rgba(255, 221, 0, 0.12); }
     .st-status { min-height: 1.1rem; margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); }
 
     /* Rare-aircraft banner: sits under the corner buttons, tap to open that aircraft. */
