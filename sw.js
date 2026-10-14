@@ -12,7 +12,7 @@
  *
  * Bump VERSION to drop old caches after changing this file's strategy.
  */
-const VERSION = 'v4';
+const VERSION = 'v5';
 const SHELL_CACHE = `aero-sentry-shell-${VERSION}`;
 const CDN_CACHE = `aero-sentry-cdn-${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
@@ -21,6 +21,7 @@ const NETWORK_TIMEOUT_MS = 4000;
 const SHELL = [
   './',
   'index.html',
+  'radar.html',
   'about.html',
   'styles.css',
   'app.js',
@@ -79,7 +80,7 @@ async function networkFirst(request) {
     return response;
   } catch (err) {
     const cached = (await cache.match(request, { ignoreSearch: true }))
-      || (request.mode === 'navigate' ? (await cache.match('index.html')) || (await cache.match('./')) : null);
+      || (request.mode === 'navigate' ? (await cache.match('radar.html')) || (await cache.match('./')) : null);
     return cached || Response.error();
   }
 }

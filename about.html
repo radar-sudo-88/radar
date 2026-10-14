@@ -273,7 +273,7 @@
 
     <div class="topbar">
       <div class="brand"><span class="pulse-dot"></span> Aero Sentry</div>
-      <a class="back" href="./">&larr; Back to radar</a>
+      <a class="back" href="radar.html">&larr; Back to radar</a> <a class="back" href="./" style="margin-left:1rem">Home</a>
     </div>
 
     <header>
@@ -532,7 +532,7 @@
     </section>
 
     <footer>
-      <a class="back" href="./">&larr; Back to radar</a>
+      <a class="back" href="radar.html">&larr; Back to radar</a> <a class="back" href="./" style="margin-left:1rem">Home</a>
       <p class="credit">Co-built by father and son.</p>
       <p class="credit"><a class="bmc" href="https://buymeacoffee.com/teamaerosentry" target="_blank" rel="noopener">☕ Buy us a coffee</a></p>
     </footer>
@@ -576,7 +576,7 @@
       var timer;
       function arm() {
         clearTimeout(timer);
-        timer = setTimeout(function () { location.href = './'; }, IDLE_MS);
+        timer = setTimeout(function () { location.href = 'radar.html'; }, IDLE_MS);
       }
       ['pointerdown', 'pointermove', 'keydown', 'scroll', 'touchstart', 'wheel'].forEach(function (ev) {
         window.addEventListener(ev, arm, { passive: true });

@@ -312,9 +312,22 @@
              'px;background:' + (i % 2 ? '#ffb000' : '#00ff66') + ';animation-delay:' + (0.25 + (i % 4) * 0.04).toFixed(2) + 's"></i>';
     }
     el.innerHTML = pts + '<span class="ic fx-' + esc(it.fx || 'pulse') + '">' + it.icon + '</span><div class="k">' + esc(it.title) +
-      '</div><div class="n">' + esc(it.name) + '</div><div class="d">' + esc(it.desc || '') + '</div>';
+      '</div><div class="n">' + esc(it.name) + '</div><div class="d">' + esc(it.desc || '') + '</div>' +
+      '<button class="x" type="button" aria-label="Close">\u2715</button>';
     document.body.appendChild(el);
-    setTimeout(() => { el.remove(); nextCelebration(); }, 2800);
+    // The cross closes this popup and skips anything still queued, so the menus are usable straight away.
+    // (Badges are already saved before celebrate() runs, so nothing is lost by dismissing early.)
+    const x = el.querySelector('.x');
+    if (x) x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearTimeout(S.achTimer);
+      S.achQueue = [];
+      S.achBusy = false;
+      el.remove();
+      setScrim(false);
+    });
+    clearTimeout(S.achTimer);
+    S.achTimer = setTimeout(() => { el.remove(); nextCelebration(); }, 2800);
   }
 
   function clearAchievements() {
@@ -780,6 +793,8 @@
   #skl-ach .k{font-size:.62rem;letter-spacing:.25em;text-transform:uppercase;color:var(--accent-military,#ffb000)}
   #skl-ach .n{font-size:1.05rem;font-weight:700;color:#fff}
   #skl-ach .d{opacity:.75;font-size:.72rem}
+  #skl-ach .x{position:absolute;top:.35rem;right:.35rem;pointer-events:auto;cursor:pointer;width:2rem;height:2rem;border-radius:50%;
+    background:rgba(0,0,0,.5);border:1px solid var(--accent-amber-dim,#7a5a00);color:var(--accent-military,#ffb000);font-size:.9rem;line-height:1;padding:0}
   #skl-ach .pt{position:absolute;left:50%;top:38%;width:6px;height:6px;border-radius:50%;animation:skl-pt .9s ease-out both}
   .fx-spin{animation:skl-fx-spin .9s cubic-bezier(.2,.8,.2,1) .3s both}
   .fx-shake{animation:skl-fx-shake .7s ease .3s both}
@@ -1003,9 +1018,28 @@
     return true;
   }
 
+  // Home page (index.html) deep links: ?view=look opens the Sky Ledger panel (its "Look this way" card); ?view=ar opens it
+  // and focuses the AR button. The camera/sensor permission still has to come from a tap on iOS, so AR is
+  // never auto-started here.
+  function openFromLink() {
+    let v = '';
+    try { v = new URLSearchParams(window.location.search).get('view') || ''; } catch (e) { return; }
+    if (v !== 'look' && v !== 'ar') return;
+    setTimeout(() => {
+      togglePanel(true);
+      if (v !== 'ar') return;
+      let tries = 0;
+      const t = setInterval(() => {
+        const b = document.getElementById('skl-ar-go');
+        if (b) { clearInterval(t); try { b.scrollIntoView({ block: 'center' }); b.focus(); } catch (e) { /* cosmetic */ } }
+        else if (++tries > 20) clearInterval(t);
+      }, 250);
+    }, 800);
+  }
+
   function init() {
     if (typeof document === 'undefined') return;
-    const go = () => { ensureUI(); renderChip(); };
+    const go = () => { ensureUI(); renderChip(); openFromLink(); };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
     try { console.log('%cSky Ledger ' + SIGNATURE, 'color:#ffb000'); } catch (e) { /* ignore */ }
   }

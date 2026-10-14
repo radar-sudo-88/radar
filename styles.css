@@ -1223,6 +1223,8 @@
       border-color: #ffdd00;
     }
     .bmc-btn:hover { background: rgba(255, 221, 0, 0.12); }
+    .home-btn { border-color: var(--card-border); }
+    .home-btn:hover { background: rgba(var(--accent-rgb), 0.1); }
     .st-status { min-height: 1.1rem; margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); }
 
     /* Rare-aircraft banner: sits under the corner buttons, tap to open that aircraft. */
