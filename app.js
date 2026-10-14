@@ -260,6 +260,37 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // saved postcode through the overlay once, the same way this version did.
     const PRIVACY_ACK_COOKIE = 'radar_privacy_ack_v1';
 
+    // --- Location for people outside the UK ---------------------------------------------
+    // The postcode flow is UK-only (postcodes.io). Everyone else sets their station with the
+    // device's location or a place search, saved as "lat,lon,label" in this cookie, rounded to
+    // 2 decimals (~1 km): plenty for a 35+ NM scope, and it lets nearby viewers share cache
+    // entries. Saving one clears the other, so only a postcode OR a location cookie exists.
+    const LOC_COOKIE = 'radar_loc';
+    const UK_TIMEZONES = ['Europe/London', 'Europe/Belfast', 'Europe/Jersey', 'Europe/Guernsey', 'Europe/Isle_of_Man', 'GB', 'GB-Eire'];
+    // A hint only (used to open the "Not in the UK?" section by default) - never to block anyone.
+    function looksOutsideUK() {
+      try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        return !!tz && !UK_TIMEZONES.includes(tz);
+      } catch (e) { return false; }
+    }
+    // "lat,lon" or "lat,lon,label" -> { lat, lon, label } or null.
+    function parseLatLon(str) {
+      if (typeof str !== 'string') return null;
+      const parts = str.split(',');
+      if (parts.length < 2 || parts[0].trim() === '' || parts[1].trim() === '') return null;
+      const lat = Number(parts[0]), lon = Number(parts[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+      return { lat, lon, label: parts.slice(2).join(',').trim().slice(0, 60) };
+    }
+    function formatLatLon(lat, lon, label) {
+      const clean = (label || '').replace(/[\r\n]/g, ' ').trim().slice(0, 60);
+      return `${lat.toFixed(2)},${lon.toFixed(2)}${clean ? ',' + clean : ''}`;
+    }
+    function clearCookie(name) {
+      document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax`;
+    }
+
     // Shared by the URL-based override below, the saved-cookie lookup, and the manual
     // postcode-entry form - one place that actually talks to postcodes.io.
     async function geocodePostcode(rawInput) {
@@ -301,12 +332,42 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           userConfig.lat = result.lat;
           userConfig.lon = result.lon;
           setCookie(POSTCODE_COOKIE, result.postcode, 365);
+          clearCookie(LOC_COOKIE);
           console.log(`[STATION] Centred on ${result.postcode} (${result.lat}, ${result.lon}) from URL`);
           return;
         }
         console.warn('[STATION] URL segment postcode lookup failed, falling back:', rawSegment, result.error);
         // Fall through - an unmatched/bad URL postcode still gives the saved cookie (or the
         // first-visit prompt) a chance, rather than silently keeping the hardcoded default.
+      }
+
+      // ?ll=lat,lon from a shared link (see buildShareLink) - the non-UK equivalent of ?pc=.
+      const llLink = rawSegment ? null : parseLatLon(new URLSearchParams(window.location.search).get('ll') || '');
+      if (llLink) {
+        userConfig.lat = llLink.lat;
+        userConfig.lon = llLink.lon;
+        setCookie(LOC_COOKIE, formatLatLon(llLink.lat, llLink.lon, llLink.label), 365);
+        clearCookie(POSTCODE_COOKIE);
+        console.log(`[STATION] Centred on ${llLink.lat}, ${llLink.lon} from URL`);
+        return;
+      }
+
+      // Saved non-UK location (set with "Use my location" / place search).
+      const savedLoc = getCookie(POSTCODE_COOKIE) ? null : parseLatLon(getCookie(LOC_COOKIE) || '');
+      if (savedLoc) {
+        if (!getCookie(PRIVACY_ACK_COOKIE)) {
+          if (new URLSearchParams(window.location.search).get('autostart') === '1') {
+            setCookie(PRIVACY_ACK_COOKIE, '1', 365);
+          } else {
+            forcedReconsent = true;
+            needsPostcodePrompt = true;
+            return;
+          }
+        }
+        userConfig.lat = savedLoc.lat;
+        userConfig.lon = savedLoc.lon;
+        console.log(`[STATION] Centred on ${savedLoc.lat}, ${savedLoc.lon} from saved location`);
+        return;
       }
 
       const cookiePostcode = getCookie(POSTCODE_COOKIE);
@@ -392,11 +453,19 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const titleEl = document.getElementById('postcode-title');
       const subEl = document.getElementById('postcode-sub');
       if (titleEl) titleEl.textContent = forcedReconsent ? 'Confirm Your Location' : 'Set Your Location';
+      const outsideUK = looksOutsideUK();
       if (subEl) {
         subEl.textContent = forcedReconsent
           ? "We've updated how we explain the postcode cookie below - please confirm to carry on."
-          : 'Enter a UK postcode to centre the radar on your area';
+          : outsideUK
+            ? "Looks like you're outside the UK - use your location or search for a place below (or enter a UK postcode)"
+            : 'Enter a UK postcode to centre the radar on your area';
       }
+      const nonUk = document.getElementById('postcode-nonuk');
+      if (nonUk) nonUk.open = outsideUK || !!getCookie(LOC_COOKIE);
+      setLocError('');
+      const locResults = document.getElementById('loc-results');
+      if (locResults) locResults.textContent = '';
       // Cancel is offered whenever a location is already set (the 📍 button); on a genuine first
       // visit - or this forced re-confirm - the prompt is mandatory, so no way out - hiding it
       // there would leave a dead screen.
@@ -449,6 +518,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       }
 
       setCookie(POSTCODE_COOKIE, result.postcode, 365);
+      clearCookie(LOC_COOKIE);
       setCookie(PRIVACY_ACK_COOKIE, '1', 365);
       needsPostcodePrompt = false;
       forcedReconsent = false;
@@ -463,6 +533,80 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         userConfig.lat = result.lat;
         userConfig.lon = result.lon;
         startFeed();
+      }
+    }
+
+    // ---- non-UK location: device location + place search ------------------------------------
+    function setLocError(msg) {
+      const el = document.getElementById('loc-error');
+      if (!el) return;
+      el.textContent = msg || '';
+      el.style.display = msg ? 'block' : 'none';
+    }
+
+    // Same hand-off as a successful postcode submit, with coordinates instead of a postcode.
+    function chooseLocation(lat, lon, label) {
+      lat = Math.round(lat * 100) / 100;
+      lon = Math.round(lon * 100) / 100;
+      setCookie(LOC_COOKIE, formatLatLon(lat, lon, label), 365);
+      clearCookie(POSTCODE_COOKIE);
+      setCookie(PRIVACY_ACK_COOKIE, '1', 365);
+      needsPostcodePrompt = false;
+      forcedReconsent = false;
+      hidePostcodeOverlay();
+      if (feedStarted) {
+        recenterStation(lat, lon);
+      } else {
+        userConfig.lat = lat;
+        userConfig.lon = lon;
+        startFeed();
+      }
+    }
+
+    function useDeviceLocation() {
+      setLocError('');
+      if (!feedStarted) unlockAudioFromGesture(); // must happen inside the tap, see handlePostcodeSubmit
+      if (!navigator.geolocation) { setLocError("This browser can't share a location - search for a place instead."); return; }
+      if (!window.isSecureContext) { setLocError('Device location needs HTTPS - search for a place instead.'); return; }
+      const btn = document.getElementById('loc-geo');
+      if (btn) btn.disabled = true;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => { if (btn) btn.disabled = false; chooseLocation(pos.coords.latitude, pos.coords.longitude, 'My location'); },
+        (err) => {
+          if (btn) btn.disabled = false;
+          setLocError(err && err.code === 1
+            ? 'Location permission was denied - allow it in your browser settings, or search for a place instead.'
+            : "Couldn't get your location - try again, or search for a place instead.");
+        },
+        { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 }
+      );
+    }
+
+    // Open-Meteo's free geocoding API: no key, sends CORS headers, results carry the country.
+    async function searchPlaces(query) {
+      const box = document.getElementById('loc-results');
+      const q = (query || '').trim();
+      if (!box || q.length < 2) return;
+      setLocError('');
+      box.textContent = '';
+      try {
+        const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`);
+        if (!res.ok) throw new Error('bad status');
+        const data = await res.json();
+        const found = (data && data.results || []).filter((r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude));
+        if (!found.length) { setLocError("Couldn't find that place - try a nearby city or add the country."); return; }
+        found.forEach((r) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = [r.name, r.admin1, r.country].filter(Boolean).join(', ');
+          b.addEventListener('click', () => {
+            if (!feedStarted) unlockAudioFromGesture();
+            chooseLocation(r.latitude, r.longitude, r.name);
+          });
+          box.appendChild(b);
+        });
+      } catch (err) {
+        setLocError("Couldn't reach the place search - check your connection and try again.");
       }
     }
 
@@ -3471,6 +3615,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const q = new URLSearchParams();
       const pc = settings.shareLocation ? getCookie(POSTCODE_COOKIE) : null;
       if (pc) q.set('pc', pc);
+      const ll = (settings.shareLocation && !pc) ? parseLatLon(getCookie(LOC_COOKIE) || '') : null;
+      if (ll) q.set('ll', `${ll.lat.toFixed(2)},${ll.lon.toFixed(2)}`);
       if (settings.speed !== SETTINGS_DEFAULTS.speed) q.set('spd', settings.speed);
       if (settings.alt !== SETTINGS_DEFAULTS.alt) q.set('alt', settings.alt);
       if (settings.dist !== SETTINGS_DEFAULTS.dist) q.set('dst', settings.dist);
@@ -4476,6 +4622,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     // the corner "change location" button, both any time after that too.
     const postcodeForm = document.getElementById('postcode-form');
     if (postcodeForm) postcodeForm.addEventListener('submit', handlePostcodeSubmit);
+    const locGeoBtn = document.getElementById('loc-geo');
+    if (locGeoBtn) locGeoBtn.addEventListener('click', useDeviceLocation);
+    const locForm = document.getElementById('loc-form');
+    if (locForm) locForm.addEventListener('submit', (e) => { e.preventDefault(); searchPlaces(document.getElementById('loc-q').value); });
     const postcodeCancelBtn = document.getElementById('postcode-cancel');
     if (postcodeCancelBtn) postcodeCancelBtn.addEventListener('click', hidePostcodeOverlay);
     document.addEventListener('keydown', (e) => {
@@ -4629,7 +4779,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
       document.getElementById('settings-copy-link').addEventListener('click', async () => {
         const url = buildShareLink();
-        if (await copyText(url)) say(settings.shareLocation && getCookie(POSTCODE_COOKIE) ? 'Link copied (includes your postcode)' : 'Link copied');
+        if (await copyText(url)) say(settings.shareLocation && (getCookie(POSTCODE_COOKIE) || getCookie(LOC_COOKIE)) ? 'Link copied (includes your location)' : 'Link copied');
         else window.prompt('Copy this link', url);
       });
       document.getElementById('settings-reset').addEventListener('click', () => {

@@ -44,6 +44,18 @@
       <button type="submit">Set location</button>
     </form>
     <div id="postcode-error" class="postcode-error"></div>
+    <!-- Outside the UK: device location or a place search (see "non-UK location" in app.js).
+         Opened by default when the browser's timezone isn't a UK one. -->
+    <details id="postcode-nonuk" class="nonuk">
+      <summary>Not in the UK?</summary>
+      <button type="button" id="loc-geo">📍 Use my current location</button>
+      <form id="loc-form" autocomplete="off">
+        <input type="text" id="loc-q" placeholder="Search a city or place" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" />
+        <button type="submit">Search</button>
+      </form>
+      <div id="loc-results" class="loc-results"></div>
+      <div id="loc-error" class="postcode-error"></div>
+    </details>
     <!-- Cookie notice, shown every time a postcode is about to be saved (new or re-confirmed).
          See PRIVACY_ACK_COOKIE in app.js - bump its version if this wording changes materially. -->
     <p id="postcode-privacy-note" class="postcode-privacy-note">
@@ -51,6 +63,10 @@
       store it anywhere else. Looking it up briefly sends it to
       <a href="https://postcodes.io" target="_blank" rel="noopener noreferrer">postcodes.io</a>,
       a free, independent postcode lookup service not run by us.
+      Outside the UK, your device location stays on your device and only a rounded version (about
+      1&nbsp;km) is saved in the same cookie; a place search briefly sends what you type to
+      <a href="https://open-meteo.com/en/docs/geocoding-api" target="_blank" rel="noopener noreferrer">Open-Meteo</a>'s
+      free geocoding service.
       <a href="about.html#disclaimer">More on this</a>.
     </p>
     <button type="button" id="postcode-cancel" hidden>Cancel</button>

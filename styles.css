@@ -1464,3 +1464,41 @@
     .st-seg-wrap { flex-wrap: wrap; }
     .st-seg-wrap button { flex: 1 1 28%; }
     .st-hint { margin: 0.2rem 0 0.1rem; font-size: 0.68rem; line-height: 1.35; color: var(--text-dim); }
+
+    /* Non-UK location chooser inside the postcode overlay */
+    #postcode-nonuk { width: min(20rem, 100%); }
+    #postcode-nonuk > summary { cursor: pointer; text-align: center; font-size: 0.8rem; color: var(--accent-green); padding: 0.4rem 0; list-style: none; }
+    #postcode-nonuk > summary::-webkit-details-marker { display: none; }
+    #postcode-nonuk[open] > summary { margin-bottom: 0.4rem; }
+    #postcode-nonuk button {
+      width: 100%;
+      background: transparent;
+      border: 1px solid var(--accent-green);
+      color: var(--accent-green);
+      font: inherit;
+      font-size: 0.85rem;
+      padding: 0.55rem 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+      min-height: 2.4rem;
+    }
+    #postcode-nonuk button:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.12); }
+    #postcode-nonuk button:disabled { opacity: 0.5; cursor: default; }
+    #loc-form { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+    #loc-form button { width: auto; flex-shrink: 0; }
+    #loc-q {
+      flex: 1; min-width: 0;
+      background: var(--input-bg);
+      border: 1px solid var(--accent-green);
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: max(16px, 1rem); /* 16px minimum so iOS doesn't zoom in on focus */
+      padding: 0.5rem 0.65rem;
+      border-radius: 4px;
+      -webkit-appearance: none; appearance: none;
+      -webkit-user-select: text; user-select: text;
+    }
+    #loc-q:focus { outline: none; box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.4); }
+    .loc-results { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.5rem; }
+    .loc-results button { text-align: left; border-color: var(--card-border); color: var(--text-main); }
+    .loc-results button:hover { border-color: var(--accent-green); }
