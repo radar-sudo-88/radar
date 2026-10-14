@@ -256,6 +256,21 @@
       border-radius: 50%;
       text-decoration: none;
     }
+    #home-btn {
+      position: fixed;
+      top: 0.6rem;
+      right: 11rem;
+      z-index: 10002;
+      background: var(--btn-bg);
+      border: 1px solid var(--accent-amber-dim);
+      color: var(--accent-military);
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0.4rem 0.5rem;
+      border-radius: 50%;
+      text-decoration: none;
+    }
+    #home-btn:hover { border-color: var(--accent-military); }
     #about-link:hover {
       border-color: var(--accent-military);
     }
@@ -1223,8 +1238,6 @@
       border-color: #ffdd00;
     }
     .bmc-btn:hover { background: rgba(255, 221, 0, 0.12); }
-    .home-btn { border-color: var(--card-border); }
-    .home-btn:hover { background: rgba(var(--accent-rgb), 0.1); }
     .st-status { min-height: 1.1rem; margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); }
 
     /* Rare-aircraft banner: sits under the corner buttons, tap to open that aircraft. */

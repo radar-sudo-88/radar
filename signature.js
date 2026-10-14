@@ -908,13 +908,10 @@
     ensureUI();
     const chip = document.getElementById('skl-chip'), btn = document.getElementById('skl-btn');
     const t = S.target;
-    if (t && t.eta.minutes <= 15) {
-      chip.style.display = 'block';
-      chip.textContent = '\u2708 ' + callsign(t.ac) + ' overhead ' + etaText(t.eta.minutes) + ' \u00b7 ' + t.vis.label;
-      btn.classList.add('live');
-      if (!S.chipShown) { chip.classList.remove('in'); void chip.offsetWidth; chip.classList.add('in'); }
-      S.chipShown = true;
-    } else { chip.style.display = 'none'; btn.classList.remove('live'); S.chipShown = false; }
+    // The "<callsign> overhead in N min - Naked-eye gift" strip no longer sits over the radar; the same
+    // info is in the Sky Ledger panel. The Sky Ledger button's pulsing ring still signals a plane is coming.
+    chip.style.display = 'none';
+    if (t && t.eta.minutes <= 15) btn.classList.add('live'); else btn.classList.remove('live');
   }
 
   function compassSVG() {
