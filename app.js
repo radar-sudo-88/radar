@@ -38,9 +38,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
     const TRACK_MODES = ['off', 'selected', 'all'];
     const TRACK_LENGTHS = { short: 20, medium: 60, long: 120 }; // points kept per aircraft
     const RANGE_CHOICES = ['35', '60', '100', '150', '250'];
+    const PREDICT_MINUTES = ['1', '2', '5']; // how far ahead the predicted path looks
     const SETTINGS_DEFAULTS = {
       speed: 'kts', alt: 'ft', dist: 'nm', theme: 'green',
       trackMode: 'all', arTrackMode: 'selected', trackLen: 'short', radiusNM: '35',
+      predictMode: 'selected', predictMin: '2', showLabels: true,
       rareAlerts: true, shareLocation: true, milOnly: false, showAirports: true,
       filterOperator: '', filterType: '', filterSquawk: '',
       filterAltMin: '', filterAltMax: '', filterSpeedMin: '', filterSpeedMax: ''
@@ -81,7 +83,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (TRACK_MODES.includes(raw.arTrackMode)) out.arTrackMode = raw.arTrackMode;
       if (has(TRACK_LENGTHS, raw.trackLen)) out.trackLen = raw.trackLen;
       if (RANGE_CHOICES.includes(String(raw.radiusNM))) out.radiusNM = String(raw.radiusNM);
-      ['rareAlerts', 'shareLocation', 'milOnly', 'showAirports'].forEach((k) => {
+      if (TRACK_MODES.includes(raw.predictMode)) out.predictMode = raw.predictMode;
+      if (PREDICT_MINUTES.includes(String(raw.predictMin))) out.predictMin = String(raw.predictMin);
+      ['rareAlerts', 'shareLocation', 'milOnly', 'showAirports', 'showLabels'].forEach((k) => {
         if (typeof raw[k] === 'boolean') out[k] = raw[k];
       });
       // Free-text filters: cap length defensively, nothing else to validate - shownAircraft()
@@ -2346,33 +2350,73 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
 
       sctx.strokeStyle = accentRgba(0.35);
       sctx.lineWidth = 1;
-      [0.25, 0.5, 0.75, 1.0].forEach((factor) => {
-        const r = maxRadiusPx * factor;
+      const rings = cachedRings || [];
+      rings.forEach((pts, ri) => {
         sctx.beginPath();
-        sctx.arc(centerPt.x, centerPt.y, r, 0, 2 * Math.PI);
+        pts.forEach((p, i) => { if (i === 0) sctx.moveTo(p.x, p.y); else sctx.lineTo(p.x, p.y); });
+        sctx.closePath();
         sctx.stroke();
 
         sctx.fillStyle = accentRgba(0.8);
         sctx.font = `${9 * s}px system-ui`;
-        sctx.fillText(fmtDist(userConfig.radiusNM * factor, 0), centerPt.x + 4 * s, centerPt.y - r + 10 * s);
+        sctx.fillText(fmtDist(userConfig.radiusNM * SCOPE_RING_FACTORS[ri], 0), pts[0].x + 4 * s, pts[0].y + 10 * s);
       });
 
-      sctx.beginPath();
-      sctx.moveTo(centerPt.x - maxRadiusPx, centerPt.y);
-      sctx.lineTo(centerPt.x + maxRadiusPx, centerPt.y);
-      sctx.moveTo(centerPt.x, centerPt.y - maxRadiusPx);
-      sctx.lineTo(centerPt.x, centerPt.y + maxRadiusPx);
-      sctx.strokeStyle = accentRgba(0.25);
-      sctx.stroke();
+      // Crosshair and compass letters sit on the outer ring at N / E / S / W.
+      const outer = rings.length ? rings[rings.length - 1] : null;
+      if (outer) {
+        const q = SCOPE_RING_STEPS / 4;
+        const n = outer[0], e = outer[q], so = outer[2 * q], w = outer[3 * q];
+        sctx.beginPath();
+        [n, e, so, w].forEach((p) => { sctx.moveTo(centerPt.x, centerPt.y); sctx.lineTo(p.x, p.y); });
+        sctx.strokeStyle = accentRgba(0.25);
+        sctx.stroke();
 
-      sctx.fillStyle = currentTheme().accent;
-      sctx.font = `bold ${11 * s}px system-ui`;
-      sctx.fillText('N', centerPt.x - 4 * s, centerPt.y - maxRadiusPx - 5 * s);
-      sctx.fillText('S', centerPt.x - 4 * s, centerPt.y + maxRadiusPx + 15 * s);
-      sctx.fillText('E', centerPt.x + maxRadiusPx + 5 * s, centerPt.y + 4 * s);
-      sctx.fillText('W', centerPt.x - maxRadiusPx - 18 * s, centerPt.y + 4 * s);
+        sctx.fillStyle = currentTheme().accent;
+        sctx.font = `bold ${11 * s}px system-ui`;
+        sctx.fillText('N', n.x - 4 * s, n.y - 5 * s);
+        sctx.fillText('S', so.x - 4 * s, so.y + 15 * s);
+        sctx.fillText('E', e.x + 5 * s, e.y + 4 * s);
+        sctx.fillText('W', w.x - 18 * s, w.y + 4 * s);
+      }
 
       sctx.shadowBlur = 0;
+    }
+
+    // The range rings are true distances on the ground, so on a Mercator map they are not circles:
+    // at 250 NM the north edge is ~10% further from the centre (in pixels) than the south edge.
+    // Drawing them as flat circles made them disagree with the map's own range circle (and with
+    // where aircraft actually sit) more and more as the range went up, so each ring is projected
+    // point by point instead. Points are every 5 degrees of bearing, starting at north.
+    const SCOPE_RING_FACTORS = [0.25, 0.5, 0.75, 1.0];
+    const SCOPE_RING_STEPS = 72;
+    const EARTH_RADIUS_NM = 6371000 / 1852;
+    let cachedRings = null; // one array of {x, y} per entry in SCOPE_RING_FACTORS
+
+    function destinationPoint(lat, lon, bearingDeg, distNM) {
+      const d = distNM / EARTH_RADIUS_NM;
+      const b = bearingDeg * Math.PI / 180;
+      const la1 = lat * Math.PI / 180;
+      const lo1 = lon * Math.PI / 180;
+      const la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(b));
+      const lo2 = lo1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la1), Math.cos(d) - Math.sin(la1) * Math.sin(la2));
+      return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
+    }
+
+    // Where the outer ring is on screen in the direction of a canvas angle (0 = east, clockwise),
+    // for the sweep beam and its fading trail. Falls back to a plain circle before the rings exist.
+    function scopeEdgeAt(theta) {
+      const c = cachedCenterPt;
+      if (!cachedRings) return { x: c.x + Math.cos(theta) * cachedMaxRadiusPx, y: c.y + Math.sin(theta) * cachedMaxRadiusPx };
+      const outer = cachedRings[cachedRings.length - 1];
+      let bearing = (theta * 180 / Math.PI + 90) % 360;
+      if (bearing < 0) bearing += 360;
+      const f = bearing / (360 / SCOPE_RING_STEPS);
+      const i = Math.floor(f) % SCOPE_RING_STEPS;
+      const a = outer[i];
+      const b = outer[(i + 1) % SCOPE_RING_STEPS];
+      const t = f - Math.floor(f);
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
     }
 
     function recomputeMapProjectionCache() {
@@ -2381,6 +2425,14 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       const edgeLat = userConfig.lat + (userConfig.radiusNM / 60);
       const edgePt = map.latLngToContainerPoint([edgeLat, userConfig.lon]);
       cachedMaxRadiusPx = Math.abs(edgePt.y - cachedCenterPt.y);
+      cachedRings = SCOPE_RING_FACTORS.map((factor) => {
+        const pts = [];
+        for (let i = 0; i < SCOPE_RING_STEPS; i++) {
+          const ll = destinationPoint(userConfig.lat, userConfig.lon, i * (360 / SCOPE_RING_STEPS), userConfig.radiusNM * factor);
+          pts.push(map.latLngToContainerPoint(ll));
+        }
+        return pts;
+      });
       renderStaticScopeLayer();
     }
 
@@ -2393,6 +2445,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         if (ac.lat && ac.lon) {
           ac.__pt = map.latLngToContainerPoint([ac.lat, ac.lon]);
         }
+        ac.__pred = null; // predicted path is rebuilt lazily by predictedPathPoints()
       });
       const trkMode = effectiveTrackMode();
       Object.keys(aircraftTrails).forEach(hex => {
@@ -2400,6 +2453,31 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         if (trkMode === 'off' || (trkMode === 'selected' && hex !== selectedHex)) { trail.__pts = null; return; }
         trail.__pts = trail.map(p => map.latLngToContainerPoint([p.lat, p.lon]));
       });
+    }
+
+    // Predicted path: where an aircraft will be over the next few minutes if it keeps its ground
+    // speed and heading, curving along its current turn rate when the feed reports one. Returned
+    // as screen points (cached per aircraft until the next poll or map move), or null if the
+    // aircraft isn't moving or has no heading.
+    function predictedPathPoints(ac) {
+      if (ac.__pred !== undefined && ac.__pred !== null) return ac.__pred;
+      if (!map || !ac.lat || !ac.lon || ac.alt_baro === 'ground') return (ac.__pred = null);
+      const gs = Number(ac.gs);
+      const trk = Number(ac.track);
+      if (!Number.isFinite(gs) || !Number.isFinite(trk) || gs < 30) return (ac.__pred = null);
+      let rate = Number(ac.track_rate);
+      if (!Number.isFinite(rate) || Math.abs(rate) < 0.3) rate = 0;
+      rate = Math.max(-6, Math.min(6, rate)); // deg/s: ignore wild readings
+      const totalSec = (Number(settings.predictMin) || 2) * 60;
+      const stepSec = 10;
+      const pts = [ac.__pt || map.latLngToContainerPoint([ac.lat, ac.lon])];
+      let lat = ac.lat, lon = ac.lon;
+      for (let t = 0; t < totalSec; t += stepSec) {
+        const heading = trk + rate * (t + stepSec / 2);
+        [lat, lon] = destinationPoint(lat, lon, heading, gs * stepSec / 3600);
+        pts.push(map.latLngToContainerPoint([lat, lon]));
+      }
+      return (ac.__pred = pts);
     }
 
     function scheduleAircraftPoll(delay = AIRCRAFT_POLL_MS) {
@@ -3143,8 +3221,6 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // Cached once per poll/resize rather than re-derived from the map every frame - see
       // recomputeMapProjectionCache().
       const centerPt = cachedCenterPt;
-      const maxRadiusPx = cachedMaxRadiusPx;
-
       // Range rings, crosshair and N/S/E/W labels are static (they only change on
       // resize - see recomputeMapProjectionCache/renderStaticScopeLayer), so they're
       // pre-rendered once onto an offscreen canvas and just blitted here instead of
@@ -3169,8 +3245,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // segment) but far fewer draw-call round trips into the canvas backend.
       for (let i = 0; i < 15; i++) {
         const trailAngle = sweepAngle - (i * 0.012);
-        const trailX = centerPt.x + Math.cos(trailAngle) * maxRadiusPx;
-        const trailY = centerPt.y + Math.sin(trailAngle) * maxRadiusPx;
+        const trailEdge = scopeEdgeAt(trailAngle);
+        const trailX = trailEdge.x;
+        const trailY = trailEdge.y;
 
         ctx.beginPath();
         ctx.moveTo(centerPt.x, centerPt.y);
@@ -3180,8 +3257,9 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
         ctx.stroke();
       }
 
-      const sweepX = centerPt.x + Math.cos(sweepAngle) * maxRadiusPx;
-      const sweepY = centerPt.y + Math.sin(sweepAngle) * maxRadiusPx;
+      const sweepEdge = scopeEdgeAt(sweepAngle);
+      const sweepX = sweepEdge.x;
+      const sweepY = sweepEdge.y;
       ctx.shadowColor = currentTheme().accent;
       ctx.shadowBlur = 6 * canvasDpr;
       ctx.beginPath();
@@ -3210,6 +3288,33 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           ctx.stroke();
         }
       });
+
+      // Predicted paths: dashed line ahead of the aircraft with a dot every minute.
+      const predMode = (settings.predictMode === 'all' && liveAircraft && liveAircraft.length > 250) ? 'selected' : settings.predictMode;
+      if (predMode !== 'off' && liveAircraft && liveAircraft.length > 0) {
+        ctx.save();
+        shownAircraft().forEach(ac => {
+          const isSel = !!selectedHex && ac.hex === selectedHex;
+          if (predMode === 'selected' && !isSel) return;
+          if (!ac.__pt) return;
+          const pts = predictedPathPoints(ac);
+          if (!pts || pts.length < 2) return;
+          ctx.beginPath();
+          pts.forEach((pp, i) => { if (i === 0) ctx.moveTo(pp.x, pp.y); else ctx.lineTo(pp.x, pp.y); });
+          ctx.setLineDash([5 * uiScale, 4 * uiScale]);
+          ctx.strokeStyle = isSel ? accentRgba(0.9) : accentRgba(0.45);
+          ctx.lineWidth = isSel ? 1.6 : 1;
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = isSel ? accentRgba(0.95) : accentRgba(0.6);
+          for (let i = 6; i < pts.length; i += 6) { // every 60 s (points are 10 s apart)
+            ctx.beginPath();
+            ctx.arc(pts[i].x, pts[i].y, (isSel ? 2.2 : 1.6) * uiScale, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+        });
+        ctx.restore();
+      }
 
       if (liveAircraft && liveAircraft.length > 0) {
         // Label boxes placed so far this frame, so overlapping callsigns can be nudged
@@ -3303,47 +3408,52 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
           drawPwSilhouette(ctx, ac, pt, heading, silColor);
           ctx.restore();
 
-          ctx.globalAlpha = fadeAlpha;
-          const s = uiScale;
-          ctx.font = `bold ${9 * s}px system-ui`;
-          const label = ac.flight ? ac.flight.trim() : ac.hex;
-          const altText = ac.alt_baro ? ` FL${Math.round(ac.alt_baro / 100)}` : '';
-          const labelText = `${label}${altText}`;
+          if (settings.showLabels) {
+            ctx.globalAlpha = fadeAlpha;
+            const s = uiScale;
+            ctx.font = `bold ${9 * s}px system-ui`;
+            const label = ac.flight ? ac.flight.trim() : ac.hex;
+            const altText = ac.alt_baro ? ` FL${Math.round(ac.alt_baro / 100)}` : '';
+            const labelText = `${label}${altText}`;
 
-          const labelMetrics = ctx.measureText(labelText);
-          const labelPadX = 2 * s;
-          const labelPadY = 1 * s;
-          const labelBoxW = labelMetrics.width + labelPadX * 2;
-          const labelBoxH = 9 * s + labelPadY * 2;
-          let labelBoxX = pt.x + 7 * s - labelPadX;
-          let labelBoxY = pt.y + (3 - 7) * s - labelPadY;
+            const labelMetrics = ctx.measureText(labelText);
+            const labelPadX = 2 * s;
+            const labelPadY = 1 * s;
+            const labelBoxW = labelMetrics.width + labelPadX * 2;
+            const labelBoxH = 9 * s + labelPadY * 2;
+            let labelBoxX = pt.x + 7 * s - labelPadX;
+            let labelBoxY = pt.y + (3 - 7) * s - labelPadY;
 
-          // Nudge this label down, a row at a time, until it clears every box already
-          // placed this frame - so two aircraft close together on screen get readable,
-          // stacked labels instead of one illegible overlapping blob. Capped at 24 tries
-          // (a tall stack of coincident blips) so this can never hang the render loop.
-          const labelBoxGap = 2 * s;
-          for (let attempt = 0; attempt < 24; attempt++) {
-            const collidesWith = placedLabelBoxes.find(box =>
-              labelBoxX < box.x + box.w &&
-              labelBoxX + labelBoxW > box.x &&
-              labelBoxY < box.y + box.h &&
-              labelBoxY + labelBoxH > box.y
-            );
-            if (!collidesWith) break;
-            labelBoxY = collidesWith.y + collidesWith.h + labelBoxGap;
+            // Nudge this label down, a row at a time, until it clears every box already
+            // placed this frame - so two aircraft close together on screen get readable,
+            // stacked labels instead of one illegible overlapping blob. Capped at 24 tries
+            // (a tall stack of coincident blips) so this can never hang the render loop.
+            const labelBoxGap = 2 * s;
+            for (let attempt = 0; attempt < 24; attempt++) {
+              const collidesWith = placedLabelBoxes.find(box =>
+                labelBoxX < box.x + box.w &&
+                labelBoxX + labelBoxW > box.x &&
+                labelBoxY < box.y + box.h &&
+                labelBoxY + labelBoxH > box.y
+              );
+              if (!collidesWith) break;
+              labelBoxY = collidesWith.y + collidesWith.h + labelBoxGap;
+            }
+            placedLabelBoxes.push({ x: labelBoxX, y: labelBoxY, w: labelBoxW, h: labelBoxH });
+            ac.__labelBox = { x: labelBoxX, y: labelBoxY, w: labelBoxW, h: labelBoxH }; // for tap hit-testing, see findAircraftAtPoint()
+
+            // Faded white backing box behind the callsign/altitude label so it stays readable
+            // against the scope regardless of what colour/brightness is under it (trails, sweep
+            // glow, other blips).
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx.fillRect(labelBoxX, labelBoxY, labelBoxW, labelBoxH);
+
+            ctx.fillStyle = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : '#8b4513');
+            ctx.fillText(labelText, labelBoxX + labelPadX, labelBoxY + labelBoxH - labelPadY - 2 * s);
+
+          } else {
+            ac.__labelBox = null; // no label to tap, only the blip itself
           }
-          placedLabelBoxes.push({ x: labelBoxX, y: labelBoxY, w: labelBoxW, h: labelBoxH });
-          ac.__labelBox = { x: labelBoxX, y: labelBoxY, w: labelBoxW, h: labelBoxH }; // for tap hit-testing, see findAircraftAtPoint()
-
-          // Faded white backing box behind the callsign/altitude label so it stays readable
-          // against the scope regardless of what colour/brightness is under it (trails, sweep
-          // glow, other blips).
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
-          ctx.fillRect(labelBoxX, labelBoxY, labelBoxW, labelBoxH);
-
-          ctx.fillStyle = isEmg ? '#ff3333' : (isQra || isMil ? '#ffb000' : '#8b4513');
-          ctx.fillText(labelText, labelBoxX + labelPadX, labelBoxY + labelBoxH - labelPadY - 2 * s);
 
           ctx.restore(); // matches the fadeAlpha save() above
         });

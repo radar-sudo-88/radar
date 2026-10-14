@@ -12,7 +12,7 @@
  *
  * Bump VERSION to drop old caches after changing this file's strategy.
  */
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL_CACHE = `aero-sentry-shell-${VERSION}`;
 const CDN_CACHE = `aero-sentry-cdn-${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;

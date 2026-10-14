@@ -149,6 +149,10 @@
         <input type="checkbox" data-toggle="milOnly">
       </label>
       <label class="st-toggle">
+        <span><strong>Aircraft labels</strong><small>Callsign and altitude next to each aircraft on the radar</small></span>
+        <input type="checkbox" data-toggle="showLabels">
+      </label>
+      <label class="st-toggle">
         <span><strong>Show airports</strong><small>Mark nearby airports and airbases on the map</small></span>
         <input type="checkbox" data-toggle="showAirports">
       </label>
@@ -182,6 +186,22 @@
           <button type="button" data-value="short">Short</button>
           <button type="button" data-value="medium">Medium</button>
           <button type="button" data-value="long">Long</button>
+        </div>
+      </div>
+      <div class="st-row">
+        <div class="st-label">Predicted path</div>
+        <div class="st-seg" data-setting="predictMode" role="group" aria-label="Predicted path">
+          <button type="button" data-value="off">Off</button>
+          <button type="button" data-value="selected">Selected</button>
+          <button type="button" data-value="all">All</button>
+        </div>
+      </div>
+      <div class="st-row">
+        <div class="st-label">Look ahead</div>
+        <div class="st-seg" data-setting="predictMin" role="group" aria-label="Predicted path minutes ahead">
+          <button type="button" data-value="1">1 min</button>
+          <button type="button" data-value="2">2 min</button>
+          <button type="button" data-value="5">5 min</button>
         </div>
       </div>
       <div class="st-hint">Selected = just the aircraft you've tapped. Very busy scopes switch "All" to "Selected" automatically.</div>
