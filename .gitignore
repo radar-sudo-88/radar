@@ -1,0 +1,4 @@
+cors-proxy/data/
+*.db
+*.db-wal
+*.db-shm

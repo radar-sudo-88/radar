@@ -64,6 +64,8 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 const crypto = require('crypto');
+const sightings = require('./sightings');
+sightings.init();
 
 // --- Static file serving -----------------------------------------------
 // This proxy now also serves the site itself (index.html, 404.html, assets)
@@ -440,6 +442,12 @@ async function handlePointLookup(req, res, url, cors) {
       reason: upstreamResponse.ok ? null : `status_${upstreamResponse.status}`,
       durationMs,
     });
+
+    // Log the real aircraft to the SQLite sightings log (before simulated ones are injected below).
+    // Never lets a logging problem touch the response.
+    if (upstreamResponse.ok) {
+      try { sightings.record(JSON.parse(body).ac); } catch (e) { /* ignore: logging is best-effort */ }
+    }
 
     const ttlSeconds = upstreamResponse.ok ? CACHE_SECONDS : ERROR_CACHE_SECONDS;
     cache.set(cacheKey, {
