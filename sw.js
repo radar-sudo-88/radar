@@ -22,6 +22,7 @@ const SHELL = [
   './',
   'index.html',
   'radar.html',
+  'learn.html',
   'about.html',
   'styles.css',
   'app.js',

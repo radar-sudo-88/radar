@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Aero Sentry - Learn</title>
+  <meta name="description" content="How a live aircraft radar works, a daily aviation quiz, and a short history of flight.">
+  <meta name="theme-color" content="#030704">
+  <link rel="icon" href="favicon.ico" sizes="32x32">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <style>
+    :root {
+      --bg: #030704; --card: rgba(8, 20, 12, 0.85); --border: #12301c;
+      --green: #00ff66; --amber: #ffb000; --text: #cfe; --dim: rgba(204, 255, 238, 0.68);
+      --bad: #ff5a5a;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-padding-top: 4.5rem; }
+    body {
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      padding: 0 1rem max(2rem, env(safe-area-inset-bottom));
+      background-image: radial-gradient(circle at 50% -10%, rgba(0, 255, 102, 0.09), transparent 55%);
+    }
+    main { max-width: 38rem; margin: 0 auto; }
+    .top {
+      position: sticky; top: 0; z-index: 5; margin: 0 -1rem; padding: max(.6rem, env(safe-area-inset-top)) 1rem .5rem;
+      background: rgba(3, 7, 4, .92); backdrop-filter: blur(6px); border-bottom: 1px solid var(--border);
+    }
+    .bar { display: flex; align-items: center; justify-content: space-between; max-width: 38rem; margin: 0 auto .5rem; }
+    .bar a { color: var(--amber); text-decoration: none; font-size: .85rem; }
+    .bar h1 { margin: 0; font-size: .95rem; letter-spacing: .14em; text-transform: uppercase; color: var(--green); }
+    [role=tablist] { display: flex; gap: .4rem; max-width: 38rem; margin: 0 auto; }
+    [role=tab] {
+      flex: 1; min-height: 2.6rem; background: transparent; color: var(--dim); font: inherit; font-size: .88rem;
+      border: 1px solid var(--border); border-radius: .6rem; cursor: pointer;
+    }
+    [role=tab][aria-selected=true] { color: var(--green); border-color: var(--green); background: rgba(0, 255, 102, .08); }
+    section[role=tabpanel] { padding-top: 1.2rem; }
+    h2 { margin: 1.8rem 0 .5rem; font-size: 1.15rem; color: #fff; }
+    h2:first-child { margin-top: .2rem; }
+    h2 .k { font-family: var(--mono); font-size: .7rem; letter-spacing: .15em; color: var(--amber); display: block; text-transform: uppercase; }
+    p { margin: .4rem 0 .8rem; }
+    .dim { color: var(--dim); font-size: .85rem; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: .8rem; padding: .9rem 1rem; margin: .6rem 0; }
+    .card b { color: #fff; }
+    .steps { list-style: none; margin: .6rem 0; padding: 0; counter-reset: s; }
+    .steps li { counter-increment: s; position: relative; padding: .8rem 1rem .8rem 3.2rem; margin: .5rem 0;
+      background: var(--card); border: 1px solid var(--border); border-radius: .8rem; }
+    .steps li::before { content: counter(s); position: absolute; left: .9rem; top: .8rem; width: 1.7rem; height: 1.7rem; border-radius: 50%;
+      border: 1px solid var(--green); color: var(--green); font: 700 .85rem/1.6rem var(--mono); text-align: center; }
+    .steps li b { color: #fff; display: block; }
+    details { background: var(--card); border: 1px solid var(--border); border-radius: .8rem; margin: .5rem 0; }
+    summary { padding: .8rem 1rem; cursor: pointer; font-weight: 600; color: #fff; list-style-position: inside; }
+    details > div { padding: 0 1rem .9rem; }
+    .demo { border-color: var(--amber); }
+    .demo label { display: block; margin: .6rem 0 .1rem; font-size: .82rem; color: var(--dim); }
+    .demo input[type=range] { width: 100%; accent-color: var(--green); }
+    .big { font: 700 1.5rem var(--mono); color: var(--green); }
+    .track { position: relative; height: 2.2rem; margin: .8rem 0 .3rem; border-bottom: 1px dashed var(--border); }
+    .dot { position: absolute; bottom: -5px; width: 10px; height: 10px; border-radius: 50%; }
+    .dot.a { background: var(--green); left: 0; } .dot.b { background: transparent; border: 2px solid var(--amber); }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    td, th { text-align: left; padding: .4rem .3rem; border-bottom: 1px solid var(--border); }
+    td:first-child { font-family: var(--mono); color: var(--amber); white-space: nowrap; }
+    /* quiz */
+    .q-meta { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .75rem; color: var(--amber); letter-spacing: .1em; }
+    .q-text { font-size: 1.12rem; color: #fff; margin: .6rem 0 .9rem; }
+    .opts { display: grid; gap: .5rem; }
+    .opt { text-align: left; min-height: 3rem; padding: .6rem .9rem; background: var(--card); color: var(--text); font: inherit;
+      border: 1px solid var(--border); border-radius: .7rem; cursor: pointer; }
+    .opt:hover:not(:disabled) { border-color: var(--green); }
+    .opt.ok { border-color: var(--green); background: rgba(0, 255, 102, .14); color: #fff; }
+    .opt.no { border-color: var(--bad); background: rgba(255, 90, 90, .12); }
+    .opt:disabled { cursor: default; }
+    .why { margin: .8rem 0; padding: .7rem .9rem; border-left: 3px solid var(--amber); background: rgba(255, 176, 0, .06); font-size: .9rem; }
+    .btn { min-height: 2.8rem; padding: .5rem 1.1rem; background: rgba(0, 255, 102, .1); color: var(--green); font: inherit; font-weight: 600;
+      border: 1px solid var(--green); border-radius: .7rem; cursor: pointer; }
+    .btn.alt { background: transparent; color: var(--amber); border-color: var(--amber); }
+    .row { display: flex; gap: .6rem; flex-wrap: wrap; margin: .8rem 0; }
+    .score { font: 700 2.6rem var(--mono); color: var(--green); margin: .2rem 0; }
+    /* history */
+    .tl { list-style: none; margin: .6rem 0; padding: 0 0 0 1rem; border-left: 1px solid var(--green); }
+    .tl li { position: relative; padding: .1rem 0 .9rem .9rem; }
+    .tl li::before { content: ''; position: absolute; left: -1.33rem; top: .45rem; width: .6rem; height: .6rem; border-radius: 50%; background: var(--green); }
+    .tl .y { font-family: var(--mono); color: var(--amber); font-size: .85rem; display: block; }
+    .grid { display: grid; gap: .6rem; }
+    .card h3 { margin: 0 0 .15rem; font-size: 1rem; color: #fff; }
+    .card .tag { font-family: var(--mono); font-size: .72rem; color: var(--amber); letter-spacing: .08em; }
+    :focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="bar"><a href="./">&larr; Home</a><h1>Learn</h1><a href="radar.html">Radar &rsaquo;</a></div>
+    <div role="tablist" aria-label="Learn sections">
+      <button role="tab" id="t-how" aria-controls="p-how" aria-selected="true">How it works</button>
+      <button role="tab" id="t-quiz" aria-controls="p-quiz" aria-selected="false" tabindex="-1">Quiz</button>
+      <button role="tab" id="t-hist" aria-controls="p-hist" aria-selected="false" tabindex="-1">History</button>
+    </div>
+  </div>
+
+  <main>
+    <!-- ============ HOW IT WORKS ============ -->
+    <section role="tabpanel" id="p-how" aria-labelledby="t-how">
+      <h2><span class="k">The journey of a dot</span>How a plane gets onto your screen</h2>
+      <p>Every aircraft on the radar is announcing itself. Nothing is being bounced off it, and there is no big spinning dish involved. The system is called <b>ADS-B</b> (Automatic Dependent Surveillance&ndash;Broadcast).</p>
+      <ol class="steps">
+        <li><b>The plane works out where it is</b>It uses satellite navigation (GPS) to know its own position, altitude and speed.</li>
+        <li><b>It shouts that out, over and over</b>A transponder broadcasts the position about twice a second on 1090 MHz, along with the plane's unique 24-bit ID, its callsign and its speed.</li>
+        <li><b>A receiver on the ground hears it</b>Many are run by hobbyists with a small radio dongle and an antenna. Radio like this travels in straight lines, so a plane at cruise height can be heard from a few hundred miles away.</li>
+        <li><b>The data is shared online</b>Receivers send what they hear to community networks, which combine it into one live picture of the sky.</li>
+        <li><b>Your radar asks for the nearby part</b>Aero Sentry requests the planes around your location, then draws each one at the right bearing and distance.</li>
+      </ol>
+
+      <details open class="demo">
+        <summary>Try it: why the app predicts where a plane is</summary>
+        <div>
+          <p class="dim">A plane's position only updates every second or so, and the data takes a moment to reach you. So the radar uses <b>dead reckoning</b>: take the last known position, then move it along the plane's heading at its speed.</p>
+          <label for="spd">Ground speed: <b id="spdv">450</b> knots</label>
+          <input id="spd" type="range" min="100" max="600" step="10" value="450">
+          <label for="sec">Time since the last update: <b id="secv">5</b> seconds</label>
+          <input id="sec" type="range" min="1" max="30" value="5">
+          <div class="track" aria-hidden="true"><i class="dot a"></i><i class="dot b" id="dotb"></i></div>
+          <div class="big" id="dist">1.2 km</div>
+          <p class="dim" id="distnote"></p>
+          <p class="dim">The sum: 1 knot is 1 nautical mile per hour, which is about 0.514 metres per second. So distance = speed &times; 0.514 &times; seconds.</p>
+        </div>
+      </details>
+
+      <h2><span class="k">Gaps in the sky</span>Why isn't every plane on the map?</h2>
+      <details><summary>Some aircraft don't broadcast</summary><div>Gliders, balloons and many older or very light aircraft have no ADS-B transponder at all, so a radar built on ADS-B can't see them.</div></details>
+      <details><summary>Military aircraft can stay quiet</summary><div>Military flights may switch their transponder off or not share identifying details. That's why a rare military contact showing up is worth noticing.</div></details>
+      <details><summary>Line of sight and low flying</summary><div>Radio signals can be blocked by hills, buildings and the curve of the Earth. A plane flying low, far from any receiver, may be too quiet to hear.</div></details>
+      <details><summary>Data feeds can filter</summary><div>Some networks hide certain aircraft on request. Different feeds can show slightly different skies.</div></details>
+
+      <h2><span class="k">Reading the data</span>Squawk codes</h2>
+      <p>A squawk is a four-digit code pilots set so air traffic control can pick them out. Three are special:</p>
+      <div class="card"><table>
+        <tr><td>7700</td><td><b>General emergency</b> &ndash; something is wrong on board</td></tr>
+        <tr><td>7600</td><td><b>Radio failure</b> &ndash; the pilots can't talk to ATC</td></tr>
+        <tr><td>7500</td><td><b>Hijack</b> &ndash; unlawful interference</td></tr>
+      </table></div>
+
+      <h2><span class="k">Altitude</span>What is a flight level?</h2>
+      <p>Above a certain height, pilots set their altimeters to one standard air pressure (1013.25 hPa) so everyone shares the same reference. Heights are then quoted in hundreds of feet: <b>FL350 means 35,000 ft</b>. Most jet airliners cruise somewhere between roughly FL300 and FL400.</p>
+
+      <h2><span class="k">Flat map, round Earth</span>Why do long flights curve?</h2>
+      <p>The shortest route between two points on a sphere is a <b>great circle</b>. Drawn on a flat map it looks like a curve, which is why flights from Europe to North America often arc towards the north even though they're flying the shortest way.</p>
+    </section>
+
+    <!-- ============ QUIZ ============ -->
+    <section role="tabpanel" id="p-quiz" aria-labelledby="t-quiz" hidden>
+      <div id="quiz-home">
+        <h2><span class="k">Test yourself</span>Daily quiz</h2>
+        <p>Five questions, the same for everyone each day. Callsigns, aircraft types and a bit of radar knowledge.</p>
+        <div class="card" id="daily-status"></div>
+        <div class="row">
+          <button class="btn" id="go-daily" type="button">Start daily quiz</button>
+          <button class="btn alt" id="go-practice" type="button">Practice (10 random)</button>
+        </div>
+        <p class="dim">Your streak and best score are saved on this device only.</p>
+      </div>
+      <div id="quiz-play" hidden>
+        <div class="q-meta"><span id="q-mode"></span><span id="q-num"></span></div>
+        <div class="q-text" id="q-text" aria-live="polite"></div>
+        <div class="opts" id="q-opts"></div>
+        <div class="why" id="q-why" hidden></div>
+        <div class="row"><button class="btn" id="q-next" type="button" hidden>Next</button></div>
+      </div>
+      <div id="quiz-end" hidden>
+        <h2><span class="k" id="e-mode">Finished</span>Your score</h2>
+        <div class="score" id="e-score"></div>
+        <p id="e-msg"></p>
+        <div class="row">
+          <button class="btn" id="e-practice" type="button">Practice again</button>
+          <button class="btn alt" id="e-home" type="button">Back</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ HISTORY ============ -->
+    <section role="tabpanel" id="p-hist" aria-labelledby="t-hist" hidden>
+      <h2><span class="k">Timeline</span>A short history of flight</h2>
+      <ul class="tl">
+        <li><span class="y">1903</span>The Wright brothers make the first powered, controlled flight: 12 seconds, 120 feet.</li>
+        <li><span class="y">1919</span>Alcock and Brown fly non-stop across the Atlantic. The same year, the first daily international scheduled air service begins between London and Paris, and KLM is founded.</li>
+        <li><span class="y">1952</span>The de Havilland Comet enters service with BOAC as the world's first jet airliner.</li>
+        <li><span class="y">1958</span>Pan Am starts transatlantic services with the Boeing 707, making jet travel across the ocean routine.</li>
+        <li><span class="y">1970</span>The Boeing 747 enters service, the first &ldquo;jumbo jet&rdquo;.</li>
+        <li><span class="y">1976</span>Concorde begins passenger flights with British Airways and Air France, cruising at twice the speed of sound.</li>
+        <li><span class="y">2003</span>Concorde makes its final flights.</li>
+        <li><span class="y">2007</span>The Airbus A380 enters service with Singapore Airlines.</li>
+        <li><span class="y">2011</span>The Boeing 787 Dreamliner enters service with All Nippon Airways.</li>
+        <li><span class="y">2020</span>ADS-B Out becomes required for most aircraft in controlled airspace in the US, which is part of why open radars like this one can exist.</li>
+      </ul>
+
+      <h2><span class="k">Planes you might spot</span>Famous aircraft</h2>
+      <div class="grid">
+        <div class="card"><span class="tag">B744 &middot; FIRST FLEW 1969</span><h3>Boeing 747</h3>Nicknamed the &ldquo;Queen of the Skies&rdquo;. Four engines and a hump at the front holding an upper deck. Easy to recognise on a clear day.</div>
+        <div class="card"><span class="tag">A388 &middot; FIRST FLEW 2005</span><h3>Airbus A380</h3>The only airliner with two full-length passenger decks. Four engines and a huge wing. The last one was delivered in 2021.</div>
+        <div class="card"><span class="tag">B738 &middot; FIRST FLEW 1967 (737 FAMILY)</span><h3>Boeing 737</h3>One of the most-built airliners ever. If you see a twin-engined short-haul jet with a slightly flattened engine nacelle, it's often a 737.</div>
+        <div class="card"><span class="tag">A320 &middot; FIRST FLEW 1987</span><h3>Airbus A320 family</h3>The main rival to the 737 on short and medium routes. Fly-by-wire controls were a big step for airliners when it arrived.</div>
+        <div class="card"><span class="tag">CONC &middot; SERVICE 1976&ndash;2003</span><h3>Concorde</h3>Delta wing, droop nose, Mach 2. It could cross the Atlantic in under four hours. Nothing has replaced it in passenger service.</div>
+        <div class="card"><span class="tag">B788 &middot; FIRST FLEW 2009</span><h3>Boeing 787 Dreamliner</h3>Built largely from carbon-fibre composite, with big windows, wings that flex upward in flight, and zig-zag edges on the engine covers.</div>
+      </div>
+
+      <h2><span class="k">The callsigns you'll see</span>Airlines and where they started</h2>
+      <div class="grid">
+        <div class="card"><span class="tag">BAW</span><h3>British Airways</h3>Formed in 1974 by merging BOAC and British European Airways. Privatised in 1987.</div>
+        <div class="card"><span class="tag">KLM</span><h3>KLM</h3>Founded in 1919. It is the oldest airline still operating under its original name.</div>
+        <div class="card"><span class="tag">QFA</span><h3>Qantas</h3>Founded in 1920 in Queensland. The name comes from &ldquo;Queensland and Northern Territory Aerial Services&rdquo;.</div>
+        <div class="card"><span class="tag">VIR</span><h3>Virgin Atlantic</h3>Founded by Richard Branson, with its first flight in 1984 from London Gatwick to Newark.</div>
+        <div class="card"><span class="tag">RYR</span><h3>Ryanair</h3>Founded in Ireland in 1984. It grew into one of Europe's biggest low-cost airlines.</div>
+        <div class="card"><span class="tag">EZY</span><h3>easyJet</h3>Started in 1995 by Stelios Haji-Ioannou, with its first flights from Luton to Glasgow and Edinburgh.</div>
+        <div class="card"><span class="tag">UAE</span><h3>Emirates</h3>Founded in Dubai in 1985.</div>
+      </div>
+      <p class="dim">Dates and details are kept deliberately simple. For deeper history, the airlines' own heritage pages and museum sites are a good next step.</p>
+    </section>
+  </main>
+
+  <script>
+  (function () {
+    'use strict';
+    var $ = function (id) { return document.getElementById(id); };
+
+    /* ---------- tabs ---------- */
+    var tabs = ['how', 'quiz', 'hist'];
+    function show(name, focus) {
+      tabs.forEach(function (n) {
+        var on = n === name;
+        $('t-' + n).setAttribute('aria-selected', on ? 'true' : 'false');
+        $('t-' + n).tabIndex = on ? 0 : -1;
+        $('p-' + n).hidden = !on;
+      });
+      if (focus) $('t-' + name).focus();
+      window.scrollTo(0, 0);
+      try { history.replaceState(null, '', '#' + name); } catch (e) {}
+    }
+    tabs.forEach(function (n, i) {
+      $('t-' + n).addEventListener('click', function () { show(n); });
+      $('t-' + n).addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowRight') show(tabs[(i + 1) % 3], true);
+        else if (e.key === 'ArrowLeft') show(tabs[(i + 2) % 3], true);
+      });
+    });
+    function fromHash() { var h = (location.hash || '').slice(1); if (tabs.indexOf(h) > -1) show(h); }
+    window.addEventListener('hashchange', fromHash);
+    fromHash();
+
+    /* ---------- dead reckoning demo ---------- */
+    function demo() {
+      var kn = +$('spd').value, s = +$('sec').value;
+      var m = kn * 0.514444 * s;
+      $('spdv').textContent = kn; $('secv').textContent = s;
+      $('dist').textContent = m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m';
+      var mph = Math.round(kn * 1.15078);
+      $('distnote').textContent = 'At ' + kn + ' knots (about ' + mph + ' mph) the plane has moved this far since its last report, so the dot is drawn ahead of where it was last heard.';
+      // visual: scale so 600kn*30s (about 9.3km) fills the track
+      $('dotb').style.left = 'calc(' + Math.min(100, m / 9260 * 100).toFixed(1) + '% - 5px)';
+    }
+    $('spd').addEventListener('input', demo); $('sec').addEventListener('input', demo); demo();
+
+    /* ---------- quiz ---------- */
+    var CALLSIGNS = [['BAW', 'British Airways'], ['RYR', 'Ryanair'], ['EZY', 'easyJet'], ['DLH', 'Lufthansa'], ['AFR', 'Air France'],
+      ['KLM', 'KLM'], ['UAE', 'Emirates'], ['QTR', 'Qatar Airways'], ['SIA', 'Singapore Airlines'], ['AAL', 'American Airlines'],
+      ['DAL', 'Delta Air Lines'], ['UAL', 'United Airlines'], ['VIR', 'Virgin Atlantic'], ['THY', 'Turkish Airlines'], ['ETD', 'Etihad Airways'],
+      ['QFA', 'Qantas'], ['ACA', 'Air Canada'], ['FIN', 'Finnair'], ['IBE', 'Iberia'], ['EIN', 'Aer Lingus'], ['WZZ', 'Wizz Air'],
+      ['FDX', 'FedEx Express'], ['TAP', 'TAP Air Portugal'], ['NAX', 'Norwegian']];
+    var TYPES = [['A320', 'Airbus A320'], ['A20N', 'Airbus A320neo'], ['A21N', 'Airbus A321neo'], ['A333', 'Airbus A330-300'], ['A359', 'Airbus A350-900'],
+      ['A388', 'Airbus A380-800'], ['B738', 'Boeing 737-800'], ['B38M', 'Boeing 737 MAX 8'], ['B744', 'Boeing 747-400'], ['B763', 'Boeing 767-300'],
+      ['B77W', 'Boeing 777-300ER'], ['B788', 'Boeing 787-8'], ['B789', 'Boeing 787-9'], ['E190', 'Embraer 190'], ['AT72', 'ATR 72'],
+      ['DH8D', 'Dash 8 Q400'], ['C172', 'Cessna 172']];
+    var CONCEPTS = [
+      { q: 'A plane squawks 7700. What does that mean?', o: ['General emergency', 'Radio failure', 'Hijack', 'Ready to land'], a: 0, w: '7700 is the general emergency code. 7600 is radio failure and 7500 is hijack.' },
+      { q: 'A plane squawks 7600. What does that mean?', o: ['Radio failure', 'General emergency', 'Hijack', 'Training flight'], a: 0, w: '7600 means the pilots have lost radio contact with air traffic control.' },
+      { q: 'What does FL350 mean?', o: ['35,000 feet', '3,500 feet', '350 metres', 'Flight 350'], a: 0, w: 'A flight level is the altitude in hundreds of feet, measured against standard pressure. FL350 is 35,000 ft.' },
+      { q: 'What is a knot?', o: ['One nautical mile per hour', 'One kilometre per hour', 'One mile per second', 'A unit of height'], a: 0, w: 'A knot is one nautical mile per hour, about 1.15 mph or 1.85 km/h.' },
+      { q: 'What does ADS-B stand for?', o: ['Automatic Dependent Surveillance-Broadcast', 'Aircraft Distance Signal Beacon', 'Advanced Digital Sky Base', 'Airborne Data Safety Bulletin'], a: 0, w: 'Aircraft work out their own position and broadcast it, which is why a simple ground receiver can track them.' },
+      { q: 'On which frequency do most ADS-B transmissions travel?', o: ['1090 MHz', '121.5 MHz', '5 GHz', '100 kHz'], a: 0, w: '1090 MHz is the common ADS-B frequency, the one hobby receivers listen to.' },
+      { q: 'Why do long flights from Europe to North America seem to curve north on a flat map?', o: ['They follow a great circle, the shortest route on a sphere', 'They avoid the sun', 'The map is wrong about the coast', 'Winds always blow north'], a: 0, w: 'A straight line on a globe looks curved on a flat map. Wind can also shape the exact route.' },
+      { q: 'Which of these aircraft has four engines?', o: ['Airbus A380', 'Boeing 737', 'Airbus A320', 'Boeing 787'], a: 0, w: 'The A380 has four engines, as does the Boeing 747. The 737, A320 and 787 have two.' },
+      { q: 'Why might a plane be missing from an ADS-B radar?', o: ['It has no ADS-B transponder or isn\u2019t broadcasting', 'It is flying too fast', 'It is flying too high', 'It is a jet'], a: 0, w: 'Gliders, some light aircraft and some military flights may not broadcast, so they never appear.' },
+      { q: 'Which was the first jet airliner to enter passenger service?', o: ['de Havilland Comet', 'Boeing 747', 'Concorde', 'Airbus A320'], a: 0, w: 'The Comet entered service with BOAC in 1952.' },
+      { q: 'Which airline is the oldest still operating under its original name?', o: ['KLM', 'Emirates', 'Ryanair', 'easyJet'], a: 0, w: 'KLM was founded in 1919.' },
+      { q: 'What did Concorde cruise at?', o: ['About twice the speed of sound', 'Just under the speed of sound', 'Three times the speed of sound', 'Half the speed of sound'], a: 0, w: 'Concorde cruised at about Mach 2, roughly 1,350 mph.' }
+    ];
+
+    function rng(seed) { // mulberry32
+      var a = seed >>> 0;
+      return function () { a |= 0; a = a + 0x6D2B79F5 | 0; var t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    }
+    function shuffle(arr, r) { var a = arr.slice(), i, j, t; for (i = a.length - 1; i > 0; i--) { j = Math.floor(r() * (i + 1)); t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
+    function pairQ(list, r, kind) {
+      var correct = list[Math.floor(r() * list.length)];
+      var wrong = shuffle(list.filter(function (x) { return x !== correct; }), r).slice(0, 3);
+      var opts = shuffle([correct].concat(wrong), r);
+      var q = kind === 'call' ? 'Which airline uses the callsign prefix \u201c' + correct[0] + '\u201d?' : 'Which aircraft has the ICAO type code \u201c' + correct[0] + '\u201d?';
+      var w = kind === 'call' ? correct[0] + ' is the three-letter code for ' + correct[1] + '. Callsigns on the radar often start with it, e.g. ' + correct[0] + '123.'
+                              : correct[0] + ' is how the radar labels the ' + correct[1] + '.';
+      return { q: q, o: opts.map(function (x) { return x[1]; }), a: opts.indexOf(correct), w: w };
+    }
+    function conceptQ(r, used) {
+      var pool = CONCEPTS.filter(function (c) { return used.indexOf(c) < 0; });
+      var c = pool[Math.floor(r() * pool.length)]; used.push(c);
+      var idx = shuffle(c.o.map(function (_, i) { return i; }), r);
+      return { q: c.q, o: idx.map(function (i) { return c.o[i]; }), a: idx.indexOf(c.a), w: c.w };
+    }
+    function build(seed, mode) {
+      var r = rng(seed), used = [], qs = [];
+      if (mode === 'daily') { qs.push(pairQ(CALLSIGNS, r, 'call'), pairQ(CALLSIGNS, r, 'call'), pairQ(TYPES, r, 'type'), pairQ(TYPES, r, 'type'), conceptQ(r, used)); }
+      else { for (var i = 0; i < 10; i++) { var k = r(); qs.push(k < 0.3 ? pairQ(CALLSIGNS, r, 'call') : k < 0.55 ? pairQ(TYPES, r, 'type') : conceptQ(r, used)); } }
+      return qs;
+    }
+    function todayKey() { var d = new Date(); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); }
+    function yesterdayKey() { var d = new Date(); d.setDate(d.getDate() - 1); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); }
+    function load() { try { return JSON.parse(localStorage.getItem('as-learn') || '{}') || {}; } catch (e) { return {}; } }
+    function save(o) { try { localStorage.setItem('as-learn', JSON.stringify(o)); } catch (e) {} }
+
+    var st = { qs: [], i: 0, score: 0, mode: 'daily', locked: false };
+    function view(v) { $('quiz-home').hidden = v !== 'home'; $('quiz-play').hidden = v !== 'play'; $('quiz-end').hidden = v !== 'end'; }
+    function home() {
+      var d = load(), t = todayKey(), box = $('daily-status');
+      if (d.last === t) box.innerHTML = '<b>Today\u2019s quiz done:</b> ' + d.lastScore + '/5' + (d.streak ? ' \u00b7 streak ' + d.streak + ' day' + (d.streak > 1 ? 's' : '') : '') + (d.best ? ' \u00b7 best ' + d.best + '/5' : '');
+      else box.innerHTML = '<b>Today\u2019s quiz is ready.</b>' + (d.streak && d.last === yesterdayKey() ? ' Keep your ' + d.streak + '-day streak going.' : '') + (d.best ? ' Best score: ' + d.best + '/5.' : '');
+      $('go-daily').textContent = d.last === t ? 'Replay today\u2019s quiz' : 'Start daily quiz';
+      view('home');
+    }
+    function start(mode) {
+      st.mode = mode; st.i = 0; st.score = 0;
+      st.qs = build(mode === 'daily' ? todayKey() : Math.floor(Math.random() * 4294967295), mode);
+      $('q-mode').textContent = mode === 'daily' ? 'DAILY QUIZ' : 'PRACTICE';
+      view('play'); ask();
+    }
+    function ask() {
+      var q = st.qs[st.i]; st.locked = false;
+      $('q-num').textContent = (st.i + 1) + ' / ' + st.qs.length;
+      $('q-text').textContent = q.q; $('q-why').hidden = true; $('q-next').hidden = true;
+      var box = $('q-opts'); box.innerHTML = '';
+      q.o.forEach(function (label, idx) {
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'opt'; b.textContent = label;
+        b.addEventListener('click', function () { pick(idx); }); box.appendChild(b);
+      });
+    }
+    function pick(idx) {
+      if (st.locked) return; st.locked = true;
+      var q = st.qs[st.i], bs = $('q-opts').children;
+      for (var i = 0; i < bs.length; i++) { bs[i].disabled = true; if (i === q.a) bs[i].classList.add('ok'); }
+      if (idx === q.a) st.score++; else bs[idx].classList.add('no');
+      $('q-why').textContent = (idx === q.a ? 'Correct. ' : 'Not quite. ') + q.w; $('q-why').hidden = false;
+      $('q-next').textContent = st.i === st.qs.length - 1 ? 'See score' : 'Next'; $('q-next').hidden = false; $('q-next').focus();
+    }
+    function finish() {
+      var n = st.qs.length; $('e-score').textContent = st.score + ' / ' + n;
+      $('e-mode').textContent = st.mode === 'daily' ? 'Daily quiz' : 'Practice';
+      var pct = st.score / n;
+      var msg = pct === 1 ? 'Perfect. You could be in the control tower.' : pct >= 0.7 ? 'Strong flying. Nearly there.' : pct >= 0.4 ? 'A decent start. Have another look at the Learn tab and try again.' : 'Plenty to spot next time. Practice mode is unlimited.';
+      if (st.mode === 'daily') {
+        var d = load(), t = todayKey();
+        if (d.last !== t) { d.streak = d.last === yesterdayKey() ? (d.streak || 0) + 1 : 1; d.last = t; d.lastScore = st.score; }
+        if (!d.best || st.score > d.best) d.best = st.score;
+        save(d);
+        if (d.streak > 1) msg += ' Streak: ' + d.streak + ' days.';
+      }
+      $('e-msg').textContent = msg; view('end');
+    }
+    $('go-daily').addEventListener('click', function () { start('daily'); });
+    $('go-practice').addEventListener('click', function () { start('practice'); });
+    $('q-next').addEventListener('click', function () { if (st.i === st.qs.length - 1) finish(); else { st.i++; ask(); } });
+    $('e-practice').addEventListener('click', function () { start('practice'); });
+    $('e-home').addEventListener('click', home);
+    home();
+
+    if ('serviceWorker' in navigator) window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  })();
+  </script>
+</body>
+</html>
