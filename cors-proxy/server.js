@@ -38,8 +38,9 @@
  * 4xx/429 toward the limit too): successes cached briefly (CACHE_SECONDS) to
  * spread load across pollers/tabs, failures cached longer
  * (ERROR_CACHE_SECONDS) so a temporary restriction gets a chance to clear.
- * Routeset lookups are NOT cached - each POST body is a different aircraft
- * batch, so there's nothing to key a cache on.
+ * Routeset lookups are cached per CALLSIGN for 20 minutes (see "Routeset cache"
+ * above handleRouteset): only airline-style callsigns with a plausible from-to
+ * route, and only when every plane in a request is cached.
  *
  * Caching note: Cloudflare's `caches.default` is a distributed edge cache;
  * here it's a plain in-memory Map scoped to this one Node process, which is
@@ -330,6 +331,7 @@ setInterval(() => {
   console.log(`[STATS SUMMARY] ${new Date().toISOString()}`);
   console.log(formatStatsLine('adsb.fi  (point-lookup)', stats.adsbFi));
   console.log(formatStatsLine('adsb.lol (routeset)   ', stats.adsbLol));
+  console.log(`  routeset cache: ${routesetCacheStats.hits} hits served, ${routesetCacheStats.stores} stored, ${routesetCache.size} cached now`);
 }, 5 * 60 * 1000).unref();
 
 function corsHeaders(origin) {
@@ -1170,12 +1172,85 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
+// ---------------------------------------------------------------------------------------------
+// Routeset cache (per callsign, short-lived, in memory)
+// ---------------------------------------------------------------------------------------------
+// The routeset POST used to be uncached because each body is a different aircraft batch. But the
+// answer for a single flight is stable while it's in the air, so this keys on the CALLSIGN of
+// each plane in the batch instead. It is deliberately conservative:
+//   - Only airline-style callsigns (3 letters + flight number, e.g. BAW117, SHT4YL, TOM5MH) are
+//     cached. Registrations (G-ABCD), tactical/military callsigns and anything odd are skipped,
+//     because those have no fixed route.
+//   - Only answers adsb.lol marked plausible, with a real from-to chain, are stored.
+//   - TTL is 20 minutes, not hours: one plane flies one leg in that time, but a callsign can be
+//     reused for a different leg later in the day (the BA shuttle does exactly that).
+//   - A request is answered from cache only if EVERY plane in it is cached; otherwise the original
+//     body goes upstream untouched, so the behaviour on a miss is exactly what it was before.
+//   - Failures are never cached, so the frontend's adsbdb/hexdb fallback logic is unaffected.
+// Zero dependencies, nothing written to disk: with a TTL this short, persistence would add nothing.
+const ROUTESET_CACHE_MS = 20 * 60 * 1000;
+const ROUTESET_CACHE_MAX = 2000;
+const ROUTESET_CALLSIGN_RE = /^[A-Z]{3}[0-9][0-9A-Z]{0,3}$/;
+const routesetCache = new Map(); // CALLSIGN -> { row, expiresAt }
+const routesetCacheStats = { hits: 0, stores: 0 };
+
+function routesetCacheKey(callsign) {
+  const key = String(callsign || '').trim().toUpperCase();
+  return ROUTESET_CALLSIGN_RE.test(key) ? key : null;
+}
+
+// Returns an array of cached rows (one per plane, in request order) if every plane is a fresh
+// cache hit, else null.
+function routesetCacheLookup(bodyBuffer) {
+  let planes;
+  try { planes = JSON.parse(bodyBuffer.toString('utf8')).planes; } catch (e) { return null; }
+  if (!Array.isArray(planes) || planes.length === 0 || planes.length > 50) return null;
+  const now = Date.now();
+  const rows = [];
+  for (const plane of planes) {
+    const key = routesetCacheKey(plane && plane.callsign);
+    const hit = key && routesetCache.get(key);
+    if (!hit || hit.expiresAt <= now) {
+      if (hit) routesetCache.delete(key);
+      return null;
+    }
+    rows.push(hit.row);
+  }
+  return rows;
+}
+
+function routesetCacheStore(data) {
+  if (!Array.isArray(data)) return;
+  const expiresAt = Date.now() + ROUTESET_CACHE_MS;
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue;
+    const key = routesetCacheKey(row.callsign);
+    if (!key) continue;
+    if (row.plausible === false || row.plausible === 0 || row.plausible === '0') continue;
+    const chain = String(row._airport_codes_iata || row.airport_codes || '');
+    if (chain.split('-').filter(Boolean).length < 2) continue; // no usable from-to route
+    routesetCache.delete(key); // re-insert so Map order stays oldest-first
+    routesetCache.set(key, { row, expiresAt });
+    routesetCacheStats.stores += 1;
+  }
+  while (routesetCache.size > ROUTESET_CACHE_MAX) {
+    routesetCache.delete(routesetCache.keys().next().value);
+  }
+}
+
 async function handleRouteset(req, res, cors) {
   let bodyBuffer;
   try {
     bodyBuffer = await readRequestBody(req);
   } catch (err) {
     send(res, 413, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Request body too large' }));
+    return;
+  }
+
+  const cachedRows = routesetCacheLookup(bodyBuffer);
+  if (cachedRows) {
+    routesetCacheStats.hits += 1;
+    send(res, 200, { ...cors, 'Content-Type': 'application/json', 'X-Route-Cache': 'HIT' }, JSON.stringify(cachedRows));
     return;
   }
 
@@ -1232,8 +1307,9 @@ async function handleRouteset(req, res, cors) {
         send(res, 502, { ...cors, 'Content-Type': 'application/json' }, JSON.stringify({ error: 'Empty upstream response' }));
         return;
       }
+      let parsedBody;
       try {
-        JSON.parse(body);
+        parsedBody = JSON.parse(body);
       } catch (parseErr) {
         recordResult('adsbLol', { ok: false, reason: 'malformed_json', durationMs });
         console.warn('adsb.lol routeset returned 200 with unparseable JSON - treating as a failure.');
@@ -1241,6 +1317,7 @@ async function handleRouteset(req, res, cors) {
         return;
       }
       recordResult('adsbLol', { ok: true, reason: null, durationMs });
+      routesetCacheStore(parsedBody);
     } else {
       recordResult('adsbLol', { ok: false, reason: `status_${upstreamResponse.status}`, durationMs });
     }
