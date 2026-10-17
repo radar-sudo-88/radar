@@ -875,6 +875,31 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      /* Photo column: the airline badge and the aircraft photo used to sit side by side, which in
+         a ~80px-wide column squeezed the photo into a ~45px sliver. Stack them instead - badge
+         as a thin strip on top, photo below at the full column width. */
+      .photo-row { flex-direction: column; }
+      .airline-logo-thumb {
+        width: 100%;
+        max-width: none;
+        height: 30%;
+        padding: 0.15rem;
+        border-right: none;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .aircraft-photo-thumb {
+        flex: 1 1 0;
+        width: 100%;
+        height: auto;
+        min-height: 0;
+        padding: 0.1rem;
+      }
+      .aircraft-photo-thumb img {
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        object-fit: contain;
+      }
       /* Slimmer credit line so the coffee pill doesn't eat into the radar's height. */
       .site-credit { padding: 0.1rem 0 0.25rem; white-space: nowrap; }
       .site-credit a { padding: 0.12rem 0.5rem; font-size: 0.62rem; margin-left: 0.2rem; }
