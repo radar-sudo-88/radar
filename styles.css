@@ -500,6 +500,9 @@
       background: #ffdd00;
       border-radius: 999px;
       text-decoration: none;
+      line-height: 1;
+      vertical-align: middle;
+      white-space: nowrap;
     }
     .site-credit a:hover { background: #ffe94d; }
 
@@ -857,6 +860,24 @@
       .sub-title {
         font-size: 0.5rem;
       }
+
+      /* The three metric columns are only ~75px wide each on a phone: keep every line on one
+         row and trim with an ellipsis instead of wrapping, which pushed lines out of the bar
+         and got them clipped. */
+      .scrollboard-metrics .banner-col { padding: 0 0.25rem; overflow: hidden; }
+      .scrollboard-metrics .sub-title { letter-spacing: 0.02em; }
+      .scrollboard-metrics .sub-title,
+      .scrollboard-metrics .primary-metric,
+      .scrollboard-metrics .secondary-metric,
+      .banner-col-info .airline-heading,
+      .banner-col-info .aircraft-meta {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Slimmer credit line so the coffee pill doesn't eat into the radar's height. */
+      .site-credit { padding: 0.1rem 0 0.25rem; white-space: nowrap; }
+      .site-credit a { padding: 0.12rem 0.5rem; font-size: 0.62rem; margin-left: 0.2rem; }
     }
 
     /* Tablets in portrait (iPad-class, 701-1100px wide): same stacked arrangement as the
