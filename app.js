@@ -749,7 +749,8 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // (A5 is "Heavy" = airliners, so it is not a military hint - only A6 "High Performance".)
       const isMilitary =
         category === 'A6' ||
-        /^(F[0-9]|E[0-9]|T[0-9]|A10|B1|B2|B52|C130|C17|C5M|KC|P8|RC|U2|SR71|MIR|RAF|EUFI|EF2K|F35|F22|F18|GRIP)/.test(type);
+        isMilitaryTypeCode(type) ||
+        /^(B1B|B2|B52|C5M|KC10|KC46|U2|SR71|MIR2|GRIP)$/.test(type);
 
       ctx.save();
       ctx.translate(pt.x, pt.y);
@@ -2802,6 +2803,22 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       });
     }
 
+    // ICAO military type codes. Matched exactly, or with ONE trailing letter (F18H/F18S, etc.),
+    // never by substring: 'A10' used to match the civil AW109 helicopter ('A109'), 'F15' could
+    // match 'F152', and so on.
+    const MIL_TYPE_CODES = [
+      'F16', 'F15', 'F18', 'F35', 'F22', 'EF20', 'EF2K', 'EUFI', 'TYPH', 'TOR',
+      'HAWK', 'A10', 'C130', 'C30J', 'C17', 'A400', 'K35R', 'E3TF', 'V22', 'CH47',
+      'AH64', 'UH60', 'NH90', 'P8', 'RC135', 'KC135'
+    ];
+    function isMilitaryTypeCode(type) {
+      type = String(type || '').trim().toUpperCase().replace('-', '');
+      if (!type) return false;
+      return MIL_TYPE_CODES.some(s =>
+        type === s || (type.length === s.length + 1 && type.startsWith(s) && /[A-Z]/.test(type[type.length - 1]))
+      );
+    }
+
     function isMilitary(ac) {
       const type = (ac.t || '').toUpperCase();
       const flight = (ac.flight || '').toUpperCase();
@@ -2824,18 +2841,10 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       ];
       if (civilExclusions.some(ex => type.includes(ex))) return false;
 
-      const milTypes = [
-        'F16', 'F15', 'F18', 'F35', 'F22', 'EF20', 'EF2K', 'EUFI', 'TYPH', 'TOR', 
-        'HAWK', 'A10', 'C130', 'C17', 'A400', 'K35R', 'E3TF', 'V22', 'CH47', 
-        'AH64', 'UH60', 'NH90', 'P8', 'RC135', 'KC135'
-      ];
-      if (milTypes.some(s => {
-        if (s === 'C17') return type === 'C17' || type === 'C-17';
-        return type.includes(s);
-      })) return true;
+      if (isMilitaryTypeCode(type)) return true;
 
       const milPrefixes = ['RRR', 'ASCOT', 'SHF', 'VORTEX', 'RCH', 'DUKE', 'BOOM', 'REACH', 'CNV', 'GUN', 'VIPER'];
-      if (milPrefixes.some(prefix => flight.startsWith(prefix))) return true;
+      if (milPrefixes.some(prefix => flight.startsWith(prefix) && /^\d/.test(flight.slice(prefix.length).trimStart()))) return true;
 
       const dbFlags = ac.dbFlags !== undefined ? ac.dbFlags : (ac.db_flags !== undefined ? ac.db_flags : 0);
       if (dbFlags & 1) {
@@ -2855,7 +2864,11 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // (777, 787, A330, A350, A380...), and treating it as military filled the MIL panel with
       // airline flights and fired false alerts. Genuinely military heavies (C-17, KC-135, E-3,
       // A400M, tankers...) are still caught above by type, callsign prefix or the dbFlags bit.
-      if (cat === 'A7' || cat === 'A6') {
+      // Rotorcraft (A7) is deliberately NOT a hint either: air ambulances, police, news and
+      // offshore helicopters are all A7. A6 is only trusted when the registration doesn't look
+      // civil (hyphenated 'D-ABCD' style or a US N-number).
+      const civilReg = /^[A-Z]{1,2}-[A-Z0-9]{2,5}$/.test(reg) || /^N\d{1,5}[A-Z]{0,2}$/.test(reg);
+      if (cat === 'A6' && !civilReg) {
         // TEMP DEBUG: same as above - trace which category hint fired.
         console.warn('[MIL classify] category hint fired', {
           flight: ac.flight, hex: ac.hex, type, reg, cat, dbFlags
