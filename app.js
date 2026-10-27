@@ -749,7 +749,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       // (A5 is "Heavy" = airliners, so it is not a military hint - only A6 "High Performance".)
       const isMilitary =
         category === 'A6' ||
-        /^(F[0-9]|E[0-9]|T[0-9]|A10|B1|B2|B52|C130|C17|C5M|KC|P8|RC|U2|SR71|MIR|RAF|EUFI|F35|F22|F18|GRIP)/.test(type);
+        /^(F[0-9]|E[0-9]|T[0-9]|A10|B1|B2|B52|C130|C17|C5M|KC|P8|RC|U2|SR71|MIR|RAF|EUFI|EF2K|F35|F22|F18|GRIP)/.test(type);
 
       ctx.save();
       ctx.translate(pt.x, pt.y);
@@ -1124,6 +1124,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       'F35': 'Lockheed Martin F-35 Lightning II',
       'EF20': 'Eurofighter Typhoon',
       'EUFI': 'Eurofighter Typhoon',
+      'EF2K': 'Eurofighter Typhoon',
       'TYPH': 'Eurofighter Typhoon',
       'A400': 'Airbus A400M Atlas',
       'K35R': 'Boeing KC-135 Stratotanker',
@@ -2824,7 +2825,7 @@ if (new URLSearchParams(window.location.search).get('debug') === '1') {
       if (civilExclusions.some(ex => type.includes(ex))) return false;
 
       const milTypes = [
-        'F16', 'F15', 'F18', 'F35', 'F22', 'EF20', 'EUFI', 'TYPH', 'TOR', 
+        'F16', 'F15', 'F18', 'F35', 'F22', 'EF20', 'EF2K', 'EUFI', 'TYPH', 'TOR', 
         'HAWK', 'A10', 'C130', 'C17', 'A400', 'K35R', 'E3TF', 'V22', 'CH47', 
         'AH64', 'UH60', 'NH90', 'P8', 'RC135', 'KC135'
       ];
